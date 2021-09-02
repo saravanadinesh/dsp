@@ -477,7 +477,7 @@ a {
   padding-bottom: 12px;
 }
 .div-for-slider {
-  padding-top: 35px;
+  padding-top: 10px;
   width: 97%;
   text-align: center;
 }
@@ -485,8 +485,7 @@ a {
   display: inline;
 }
 .div-for-radio label{
-  display: inline-block;
-  padding: 15px 15px;
+  padding: 5px 5px;
   color: #1EFF1E;
 }
 .div-for-radio input[type="radio"]:checked+label {
