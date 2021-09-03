@@ -2,6 +2,8 @@
 
 import wave
 import numpy as np
+from scipy.signal import get_window
+from scipy.fft import rfft, fftfreq
 import sys
 import errno
 import os
@@ -13,7 +15,6 @@ from dash.dependencies import Input, Output, State
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
-
 
 wf = None
 old_figure = {'data':[]},{'data':[]}
@@ -57,11 +58,11 @@ app.layout = html.Div(
                                    dcc.RadioItems(
                                         id='fft-window',
                                         options=[
-                                                {'label':'None (Rectangular)', 'value':'None'},
-                                                {'label':'Hamming', 'value': 'Hamming'},
-                                                {'label':'Hann', 'value':'Hann'}
+                                                {'label':'None (Rectangular)', 'value':'boxcar'},
+                                                {'label':'Hamming', 'value': 'hamming'},
+                                                {'label':'Hann', 'value':'hann'}
                                         ],
-                                        value='None'
+                                        value='boxcar'
                                    )
                                 ]
                             )
@@ -120,8 +121,14 @@ def dsp_task(channel_value, fft_window, frame_start, window_of_interest, ymin, y
     
     if wf == None:
         return old_figure 
-    wf.setpos(round(wf.getnframes()*frame_start))
-    rawdata = wf.readframes(wf.getframerate()) # Read 1 sec worth of samples
+
+    
+    F_S = wf.getframerate()
+    T_S = 1/F_S
+    num_frames = wf.getnframes()
+
+    wf.setpos(round(num_frames*frame_start))
+    rawdata = wf.readframes(F_S) # Read 1 sec worth of samples
     dt = {1:np.int8, 2:np.int16, 4:np.int32}.get(wf.getsampwidth())
     if dt == None: # We don't support other sample widths, Ex: 24-bit
         return old_figure
@@ -135,29 +142,41 @@ def dsp_task(channel_value, fft_window, frame_start, window_of_interest, ymin, y
     if channel == None:
         return old_figure
     
-    subdata_start = round(window_of_interest[0]*wf.getframerate())
-    subdata_end = round(window_of_interest[1]*wf.getframerate())
+    subdata_start = round(window_of_interest[0]*F_S)
+    subdata_end = round(window_of_interest[1]*F_S)
     subdata = npdata[channel, subdata_start:subdata_end+1]
 
-    xmin = frame_start*wf.getnframes()/wf.getframerate()  
+    xmin = frame_start*num_frames/F_S  
     xmax = xmin + 1 
     xdata = np.linspace(start=xmin, stop=xmax, num=npdata.shape[1])
     xsubdata =  xdata[subdata_start:subdata_end+1]
-    print('xmin, xmax and num: ', xmin, xmax, npdata.shape[1]) 
-    fig = {'data':[go.Scatter(x=xdata, y=npdata[channel], mode='lines',name=channel_value),
-                   go.Scatter(x=xsubdata, y=subdata, mode='lines', name='subframes')], 
-           'layout': go.Layout(
-                  colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
-                  template='plotly_dark',
-                  paper_bgcolor='rgba(0, 0, 0, 0)',
-                  plot_bgcolor='rgba(0, 0, 0, 0)',
-                  margin={'b': 15},
-                  hovermode='x',
-                  title={'text': 'Stock Prices', 'font': {'color': 'white'}, 'x': 0.5},
-                  xaxis={'range': [xmin, xmax]},
-                  yaxis={'range': [ymin, ymax]}
-          )}
-    return fig, {'data':[]}
+    tdfig = {'data':[go.Scatter(x=xdata, y=npdata[channel], mode='lines',name=channel_value),
+                    go.Scatter(x=xsubdata, y=subdata, mode='lines', name='subframes')], 
+            'layout': go.Layout(
+                        colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                        template='plotly_dark',
+                        paper_bgcolor='rgba(0, 0, 0, 0)',
+                        plot_bgcolor='rgba(0, 0, 0, 0)',
+                        margin={'b': 15},
+                        hovermode='x',
+                        xaxis={'range': [xmin, xmax]},
+                        yaxis={'range': [ymin, ymax]})
+            }
+
+    N = subdata.shape[0]
+    fddata = rfft(subdata*get_window(fft_window, N))
+    freqs = np.abs(fftfreq(N, T_S)[:N//2+1])
+    fdfig = {'data': [go.Scatter(x=freqs, y=20*np.log10(2*(1/N)*np.abs(fddata)), mode='lines')],
+             'layout': go.Layout(
+                        colorway=['#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                        template='plotly_dark',
+                        paper_bgcolor='rgba(0, 0, 0, 0)',
+                        plot_bgcolor='rgba(0, 0, 0, 0)',
+                        margin={'b': 15},
+                        hovermode='x',
+                        title={'text': 'Magnitude response', 'font': {'color': 'white'}, 'x': 0.5})
+            }
+    return tdfig, fdfig
 
 @app.callback(Output('td-graph', 'figure'),
                 Output('fd-graph', 'figure'),
