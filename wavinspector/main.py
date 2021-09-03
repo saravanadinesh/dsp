@@ -75,14 +75,14 @@ app.layout = html.Div(
                             html.Div(
                                 className='div-for-slider',
                                 children=[
-                                    dcc.Slider( id = "main-slider", min=0, max=1, step=0.1, value=0)
+                                    dcc.Slider( id = "main-slider", min=0, max=1, step=0.001, value=0)
                                 ]   
                             ),
                             html.P("sub", style={"padding-top":"10px"}),
                             html.Div(
                                 className='div-for-slider',
                                 children=[
-                                    dcc.RangeSlider( id = "sub-slider", min=0, max=1, step=0.1, value=[0.4,0.6])
+                                    dcc.RangeSlider( id = "sub-slider", min=0, max=1, step=0.001, value=[0.4,0.6])
                                 ]   
                             ),
                             dcc.Graph(id='fd-graph', config={'displayModeBar': False})
@@ -93,9 +93,29 @@ app.layout = html.Div(
     ]
 )
 
+def getminmax():
+    global wf
+    
+    ymin = 0
+    ymax = 0
+    for fs in range(wf.getnframes()//wf.getframerate()+1):
+        wf.setpos(wf.getframerate()*fs)
+        rawdata = wf.readframes(wf.getframerate()) # Read 1 sec worth of samples
+        dt = {1:np.int8, 2:np.int16, 4:np.int32}.get(wf.getsampwidth())
+        if dt == None: # We don't support other sample widths, Ex: 24-bit
+            return 0,0
+        temp = np.frombuffer(rawdata, dtype=dt)
+        npdata = temp.reshape((wf.getnchannels(),-1), order='F') # If the wav fiel is stereo, then we will get a 2-row numpy array
+        if wf.getnchannels() > 2:
+            return 0,0
+        else:
+            ymin = {0:ymin, 1:np.min(npdata)}.get(ymin > np.min(npdata))
+            ymax = {0:ymax, 1:np.max(npdata)}.get(ymax < np.max(npdata))
 
-
-def dsp_task(channel_value, fft_window, frame_start, window_of_interest):
+    return ymin, ymax
+                
+        
+def dsp_task(channel_value, fft_window, frame_start, window_of_interest, ymin, ymax):
     global wf, old_figure
     
     if wf == None:
@@ -114,8 +134,29 @@ def dsp_task(channel_value, fft_window, frame_start, window_of_interest):
    
     if channel == None:
         return old_figure
-        
-    fig = {'data':[go.Scatter(x=np.arange(npdata.shape[1]), y=npdata[channel], mode='lines',name=channel_value)]} 
+    
+    subdata_start = round(window_of_interest[0]*wf.getframerate())
+    subdata_end = round(window_of_interest[1]*wf.getframerate())
+    subdata = npdata[channel, subdata_start:subdata_end+1]
+
+    xmin = frame_start*wf.getnframes()/wf.getframerate()  
+    xmax = xmin + 1 
+    xdata = np.linspace(start=xmin, stop=xmax, num=npdata.shape[1])
+    xsubdata =  xdata[subdata_start:subdata_end+1]
+    print('xmin, xmax and num: ', xmin, xmax, npdata.shape[1]) 
+    fig = {'data':[go.Scatter(x=xdata, y=npdata[channel], mode='lines',name=channel_value),
+                   go.Scatter(x=xsubdata, y=subdata, mode='lines', name='subframes')], 
+           'layout': go.Layout(
+                  colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                  template='plotly_dark',
+                  paper_bgcolor='rgba(0, 0, 0, 0)',
+                  plot_bgcolor='rgba(0, 0, 0, 0)',
+                  margin={'b': 15},
+                  hovermode='x',
+                  title={'text': 'Stock Prices', 'font': {'color': 'white'}, 'x': 0.5},
+                  xaxis={'range': [xmin, xmax]},
+                  yaxis={'range': [ymin, ymax]}
+          )}
     return fig, {'data':[]}
 
 @app.callback(Output('td-graph', 'figure'),
@@ -153,7 +194,13 @@ def update_output(input_filename, submit_times, channel_value, fft_window, frame
                 except Exception as e:
                     return *old_figure, 'File could not be opened', *cross_mark
                 
-                td_fig, fd_fig =  dsp_task(channel_value, fft_window, frame_start, window_of_interest)
+                update_output.ymin, update_output.ymax = getminmax()     
+                td_fig, fd_fig =  dsp_task( channel_value, 
+                                            fft_window, 
+                                            frame_start, 
+                                            window_of_interest, 
+                                            update_output.ymin, 
+                                            update_output.ymax)
                 old_figure = td_fig, fd_fig
                 return td_fig, fd_fig, '',*tick_mark
             else:
@@ -171,7 +218,12 @@ def update_output(input_filename, submit_times, channel_value, fft_window, frame
 
     else:
         if (wf != None):
-            td_fig, fd_fig =  dsp_task(channel_value, fft_window, frame_start, window_of_interest)
+            td_fig, fd_fig =  dsp_task( channel_value, 
+                                        fft_window, 
+                                        frame_start, 
+                                        window_of_interest, 
+                                        update_output.ymin, 
+                                        update_output.ymax)
             old_figure = td_fig, fd_fig
             return td_fig, fd_fig, '',*tick_mark
         
