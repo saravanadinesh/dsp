@@ -223,6 +223,14 @@ a:hover {
   background-color: #007eff
 }
 
+#main-slider .rc-slider-track{
+  background-color: #5E0DAC
+}
+
+#sub-slider .rc-slider-track{
+  background-color: #FF4F00
+}
+
 .rc-slider-rail{
   background-color: #505050
 }
@@ -469,6 +477,7 @@ a {
 }
 /* Graph Control Objects ––––––––––––––––––––––––––––––––––––––––––––––––––*/
 .div-user-controls {
+  height: 100vh;
   padding-left: 55px;
   padding-top: 64px;
 }
@@ -477,8 +486,8 @@ a {
   padding-bottom: 12px;
 }
 .div-for-slider {
-  padding-top: 10px;
-  width: 97%;
+  padding-left: 5%;
+  width: 88%;
   text-align: center;
 }
 .div-for-radio input[type="radio"] {
@@ -486,7 +495,7 @@ a {
 }
 .div-for-radio label{
   padding: 5px 5px;
-  color: #1EFF1E;
+  color: #d8d8d8;
 }
 .div-for-radio input[type="radio"]:checked+label {
   background-color: #bbb;

@@ -17,7 +17,36 @@ import plotly.express as px
 import pandas as pd
 
 wf = None
-old_figure = {'data':[]},{'data':[]}
+temp_tdfig = {'data':[],
+              'layout': go.Layout(
+                            xaxis_title = 'time (sec)',
+                            yaxis_title = 'Amplitude (no unit)',
+                            autosize=True,
+                            colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                            template='plotly_dark',
+                            paper_bgcolor='rgba(0, 0, 0, 0)',
+                            plot_bgcolor='rgba(0, 0, 0, 0)',
+                            margin={'b': 75},
+                            xaxis={'range':[0,1]},
+                            yaxis={'range':[-128, 127]}
+                        )
+            }
+temp_fdfig = {'data':[],
+              'layout': go.Layout(
+                            title={'text': 'Frequency response', 'font': {'color': 'white'}, 'x': 0.5},
+                            xaxis_title = 'freq (Hz)',
+                            yaxis_title = 'Magnitude (dBFS)',
+                            autosize=True,
+                            colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                            template='plotly_dark',
+                            paper_bgcolor='rgba(0, 0, 0, 0)',
+                            plot_bgcolor='rgba(0, 0, 0, 0)',
+                            margin={'b': 75},
+                            xaxis={'range':[0,16000]},
+                            yaxis={'range':[-100, 0]}
+                        )
+            }
+old_figure = temp_tdfig, temp_fdfig
 
 # We are good to get the html aoo setup
 # external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
@@ -31,14 +60,19 @@ app.layout = html.Div(
             children=[
                 html.Div(className='three columns div-user-controls',
                          children=[
-                            html.H2("Wav File Inspector"),
-                            html.P("Type in wav filename"), 
-                            dcc.Input(id="filename", type="text"),
-                            html.Span(id="path-validity"),
-                            html.Div(id="filename-output"),
-                            
+                            html.Div(
+                                style={'height':'20%'},
+                                children=[
+                                    html.H2("Wav File Inspector"),
+                                    html.P("Type in wav filename"), 
+                                    dcc.Input(id="filename", type="text"),
+                                    html.Span(id="path-validity"),
+                                    html.Div(id="filename-output")
+                                ]
+                            ), 
                             html.Div(
                                 className='div-for-radio',
+                                style={'height':'20%'},
                                 children=[
                                    html.H4("Select channel:", style={"padding-top":"30px"}),
                                    dcc.RadioItems(
@@ -53,6 +87,7 @@ app.layout = html.Div(
                             ),
                             html.Div(
                                 className='div-for-radio',
+                                style={'height':'25%'},
                                 children=[
                                    html.H4("FFT window:", style={"padding-top":"30px"}),
                                    dcc.RadioItems(
@@ -71,22 +106,25 @@ app.layout = html.Div(
                 ),
                 html.Div(className='nine columns div-for-charts bg-grey',
                          children=[
-                            dcc.Graph(id='td-graph', config={'displayModeBar': False}, animate=True),
-                            html.P("main", style={"padding-top":"10px"}),
+                            dcc.Graph(id='td-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_tdfig),
                             html.Div(
-                                className='div-for-slider',
                                 children=[
-                                    dcc.Slider( id = "main-slider", min=0, max=1, step=0.001, value=0)
-                                ]   
+                                    html.Div(
+                                        className='div-for-slider',
+                                        children=[
+                                            dcc.Slider( id = "main-slider", min=0, max=1, step=0.001, value=0)
+                                        ]   
+                                    ),
+                                    html.Div(
+                                        className='div-for-slider',
+                                        children=[
+                                            dcc.RangeSlider( id = "sub-slider", min=0, max=1, step=0.001, value=[0.4,0.6])
+                                        ]   
+                                    )
+                                ],
+                                style={'height':'6%'}
                             ),
-                            html.P("sub", style={"padding-top":"10px"}),
-                            html.Div(
-                                className='div-for-slider',
-                                children=[
-                                    dcc.RangeSlider( id = "sub-slider", min=0, max=1, step=0.001, value=[0.4,0.6])
-                                ]   
-                            ),
-                            dcc.Graph(id='fd-graph', config={'displayModeBar': False})
+                            dcc.Graph(id='fd-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_fdfig)
                          ]
                 )
             ]
@@ -150,14 +188,17 @@ def dsp_task(channel_value, fft_window, frame_start, window_of_interest, ymin, y
     xmax = xmin + 1 
     xdata = np.linspace(start=xmin, stop=xmax, num=npdata.shape[1])
     xsubdata =  xdata[subdata_start:subdata_end+1]
-    tdfig = {'data':[go.Scatter(x=xdata, y=npdata[channel], mode='lines',name=channel_value),
+    tdfig = {'data':[go.Scatter(x=xdata, y=npdata[channel], mode='lines',name='channel {}'.format(channel+1)),
                     go.Scatter(x=xsubdata, y=subdata, mode='lines', name='subframes')], 
             'layout': go.Layout(
+                        xaxis_title = 'time (sec)',
+                        yaxis_title = 'Amplitude (no unit)',
+                        autosize=True,
                         colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
                         template='plotly_dark',
                         paper_bgcolor='rgba(0, 0, 0, 0)',
                         plot_bgcolor='rgba(0, 0, 0, 0)',
-                        margin={'b': 15},
+                        margin={'b': 75},
                         hovermode='x',
                         xaxis={'range': [xmin, xmax]},
                         yaxis={'range': [ymin, ymax]})
@@ -165,16 +206,20 @@ def dsp_task(channel_value, fft_window, frame_start, window_of_interest, ymin, y
 
     N = subdata.shape[0]
     fddata = rfft(subdata*get_window(fft_window, N))
+    magresp = 20*np.log10(2*(1/N)*np.abs(fddata)/(2**(wf.getsampwidth()*8-1))) # dBFS
     freqs = np.abs(fftfreq(N, T_S)[:N//2+1])
-    fdfig = {'data': [go.Scatter(x=freqs, y=20*np.log10(2*(1/N)*np.abs(fddata)), mode='lines')],
+    fdfig = {'data': [go.Scatter(x=freqs, y=magresp, mode='lines')],
              'layout': go.Layout(
+                        title={'text': 'Frequency response', 'font': {'color': 'white'}, 'x': 0.5},
+                        xaxis_title = 'freq (Hz)',
+                        yaxis_title = 'Magnitude (dBFS)',
+                        autosize=True,
                         colorway=['#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
                         template='plotly_dark',
                         paper_bgcolor='rgba(0, 0, 0, 0)',
                         plot_bgcolor='rgba(0, 0, 0, 0)',
-                        margin={'b': 15},
-                        hovermode='x',
-                        title={'text': 'Magnitude response', 'font': {'color': 'white'}, 'x': 0.5})
+                        margin={'b': 75},
+                        hovermode='x')
             }
     return tdfig, fdfig
 
