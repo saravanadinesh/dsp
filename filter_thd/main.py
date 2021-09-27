@@ -19,7 +19,7 @@ import dash_core_components as dcc
 import dash_html_components as html
 from dash.dependencies import Input, Output, State
 
-temp_tdfig = {'data':[],
+temp_hrfig = {'data':[],
               'layout': go.Layout(
                             title={'text': 'Filter transfer function', 'font': {'color': 'white'}, 'x': 0.5},
                             xaxis_title = 'freq (Hz)',
@@ -34,7 +34,7 @@ temp_tdfig = {'data':[],
                             yaxis={'range':[-500, 0]}
                         )
             }
-temp_fdfig = {'data':[],
+temp_iofig = {'data':[],
               'layout': go.Layout(
                             title={'text': 'Input,output spectrums', 'font': {'color': 'white'}, 'x': 0.5},
                             xaxis_title = 'freq (Hz)',
@@ -179,8 +179,8 @@ app.layout = html.Div(
                 ),
                 html.Div(className='nine columns div-for-charts bg-grey',   # This is the right block of the app
                          children=[
-                            dcc.Graph(id='td-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_tdfig),
-                            dcc.Graph(id='fd-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_fdfig)
+                            dcc.Graph(id='td-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_hrfig),
+                            dcc.Graph(id='fd-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_iofig)
                          ]
                 )
             ]
@@ -203,8 +203,8 @@ def dsp_task(fs, cutoff, sin_freq, numtaps, x_res, h_res, mul_out_res):
                 'mul_out_res':mul_out_res
              }
     
-    print("Parameters updated:")
-    print(params)
+    #print("Parameters updated:")
+    #print(params)
     
     window = 'hamming'
     # Linear phase LPF design using window method
@@ -284,7 +284,7 @@ def dsp_task(fs, cutoff, sin_freq, numtaps, x_res, h_res, mul_out_res):
     input_THDN_dB = round(10*np.log10(input_THDN), 2)
     output_THDN_dB = round(10*np.log10(output_THDN), 2)
    
-    tdfig = {'data':[go.Scatter(x=np.abs(fftfreq(numtaps, 1/fs)[:numtaps//2+1]), 
+    hrfig = {'data':[go.Scatter(x=np.abs(fftfreq(numtaps, 1/fs)[:numtaps//2+1]), 
                                 y=h_mag, name="Filter response")
                     ], 
             'layout': go.Layout(
@@ -305,7 +305,7 @@ def dsp_task(fs, cutoff, sin_freq, numtaps, x_res, h_res, mul_out_res):
     thdn_text_xpos = [18000] if sin_freq<12000 else [1000]
     input_thdn_str = 'Input THDN: {} dB'.format(input_THDN_dB)
     output_thdn_str = 'Output THDN: {} dB'.format(output_THDN_dB)
-    fdfig = {'data':[go.Scatter(x = np.abs(fftfreq(N, 1/fs)[:N//2+1]), 
+    iofig = {'data':[go.Scatter(x = np.abs(fftfreq(N, 1/fs)[:N//2+1]), 
                                 y = x_mag, name='Input spectrum'),
                      go.Scatter(x = np.abs(fftfreq(N//2, 1/fs)[:N//4+1]), 
                                 y = y_mag, mode='markers', name='Output spectrum'),
@@ -327,7 +327,7 @@ def dsp_task(fs, cutoff, sin_freq, numtaps, x_res, h_res, mul_out_res):
                         hovermode='x',
                       )
             }
-    return tdfig, fdfig
+    return hrfig, iofig
     
 
 # This is the call back for the Execute button. This is the main callback
@@ -344,7 +344,7 @@ def dsp_task(fs, cutoff, sin_freq, numtaps, x_res, h_res, mul_out_res):
                 State('mult-res','value')
              )
 def update_output(n_clicks, fs_str, cutoff, sin_freq, numtaps, x_res_str, h_res, mul_out_res):
-    global temp_tdfig, temp_fdfig
+    global temp_hrfig, temp_iofig
 
     fs = {'48':48000, '44':44100}.get(fs_str)
     x_res = {'16':16, '24':24, '32':32}.get(x_res_str)
@@ -353,10 +353,10 @@ def update_output(n_clicks, fs_str, cutoff, sin_freq, numtaps, x_res_str, h_res,
     # Check for incorrect combinations of inputs
     if mul_out_res > (x_res+h_res-2): # To avoid negative shift values in the filtering for loop
         error_msg = 'Multiplier resolution cannot be greater than input resolution + coefficient resolution + 2'
-        return error_msg, temp_tdfig, temp_fdfig
+        return error_msg, temp_hrfig, temp_iofig
 
-    td_fig, fd_fig = dsp_task(fs, cutoff*1000, sin_freq*1000, numtaps, x_res, h_res, mul_out_res)
-    return 'OK', td_fig, fd_fig
+    hr_fig, io_fig = dsp_task(fs, cutoff*1000, sin_freq*1000, numtaps, x_res, h_res, mul_out_res)
+    return 'OK', hr_fig, io_fig
   
 # Callback to restrict cutoff frequency slider to value below user chose fs
 @app.callback( Output('cutoff-freq', 'max'),
