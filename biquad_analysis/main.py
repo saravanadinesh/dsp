@@ -71,7 +71,8 @@ def getminmax():
 # Inputs: sos - second order sections array output by filter design lib functions of scipy
 #               signal
 #         x - the input signal
-#         zi - Initial state of the filter sections. 
+#         zi - Initial state of the filter sections. "state" as used in state-space model.
+#              This is not the buffer values in DF1, DF2 etc.  
 # Outputs: y - The output signal
 #          
 # ---------------------------------------------------------------------------------------- 
@@ -89,19 +90,98 @@ def sosfilt(sos, x, zi):
 
     return y, zf, ymax_vals           
 
+ 
+# ----------------------------------------------------------------------------------------
+# sosfilt_fp
+#   Filtering using SOS sections in DF1. This the fixed point version of sosfilt, but this
+# doesn't use state-space implementation like sosfilt does. 
+#
+# Inputs: sos_fp - sos coef array with elements in int64 format
+#         x_fp - input samples in int64 format
+#         buf_vals_i - Initial values of the DF1 buffers
+#         xy_res - resolution of input/output (bits) (For simplicity of biquad implementation, 
+#                  we assume that input and output have the same resolution)
+#         coef_res - resolution of numerator/denominator polynomial coefficients (Again, for
+#                    the sake of simpler implementation, we are making the assumption that
+#                    numerator and denominator coefficients have the same resolution
+#         mul_out_res - resolution of multiplier output (bits)
+#         acc_width - Accumulator width in bits
+#         final_shift_up - No. of bits by which adder output must be shifted before
+#                            assigning the filter output value
+#
+# Outputs: y_fp - Output of the filter in int64
+#          buf_vals_f - Final values of the DF1 buffer
+#          sat_flag - Saturation flag. Set to 1 if saturation occurred during accumulation
+#                     or when accumulator output is assigned to the output
+# ----------------------------------------------------------------------------------------
+def sosfilt_fp(sos_fp, x_fp, buf_vals_i, xy_res, coef_res, mul_out_res, acc_width, final_shift_down):
+    # Initialize return value(s)
+    sat_flag = False
 
+    # Make sure input parameters aren't an illegal combination
+    if xy_res > 32 or coef_res > 32 or mul_out_res > 64 or adder_width > 64: 
+        print('Error: Bit resolution of some input parameter out of acceptable values')
+        sys.exit()
 
+    mul_shift_down = xy_res + coef_res - 1 - mul_out_res    # Some constants which will be 
+                                                            # useful in the loop, but we 
+                                                            # don't want to compute them
+                                                            # again and again
+
+    for x in x_fp: # We proceed sample-by-sample
+        x_biquad = x # For the first biquad, biquad input is same as the filter input
+        for sosidx,(b0,b1,b2,a0,a1,a2) in enumerate(sos_fp):
+            acc = (b0 * xbiquad >> mul_shift_down) +                # Note that we are taking  
+                  (b1 * buf_val[sosidx][0] >> mul_shift_down) +     # some liberty here because
+                  (b2 * buf_val[sosidx][1] >> mul_shift_down) +     # in an actual hardware, each
+                  (a1 * buf_val[sosidx][2] >> mul_shift_down) +     # multiplication will happen
+                  (a2 * buf_val[sosidx][3] >> mul_shift_down)       # one at a time along with 
+                                                                    # accumulation and accumulator
+                                                                    # could overflow any time. We
+                                                                    # instead do the who MAC operation
+                                                                    # in one shot and saturate at
+                                                                    # end. 
+            
+            if np.abs(acc) > (2**(acc_width-1)):                
+                sat_flag = True
+                y_biquad = (2**(xyres-1))-1 if acc > 0 else 2**(xyres-1)   # Max out the output
+            else:
+                temp_out = acc << final_shift_up
+                if np.abs(temp_out) > (2**(xyres-1)):                
+                    sat_flag = True
+                    y_biquad = (2**(xyres-1))-1 if temp_out > 0 else 2**(xyres-1)   # Max out the output
+             
+            x_biquad = y_biquad # For the next sos, the output of this sos is its input                     
+            
+            # Shift values in registers so that we will have updated buffers when we process
+            # the  input sample. Note that, in an actual hardware, all buffer values of all
+            # biquads will be updated simultaneously. We are doing it one sos at a time for 
+            # algorithmic simplicity. Both give same results. For the purpose of this code,
+            # it is OK to do this
+            buf_val[sosidx][0] = xbiquad
+            buf_val[sosidx][1] = buf_val[sosidx][0]
+            buf_val[sosidx][2] = ybiquad
+            buf_val[sosidx][3] = buf_val[sosidx][2]
+
+        y_fp = y_biquad # Last sos output is also the overall output of the filter
+
+        
+            
 # ---------------------------------- Main code starts here ---------------------------------------------
 # Filter paramters
 Fs = 48000 # Hz. sampling frequency
 cutoff_freq = np.pi/4   # radians. Angular frequency
-order = 4 # no unit. IIR filter order. Keep it an even number for simplicity
+order = 8 # no unit. IIR filter order. Keep it an even number for simplicity
 n_freqsamples = 128
 # Derived parameters
 Ts = 1/Fs # seconds. Time difference between two consecutive samples
 
+coef_res = 32
+coef_int_bits = 2
+
 # Design filter 
 sos = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='sos')
+sos_fp = (np.round(sos*(2**(coef_res-coef_int_bits-1)))).astype(np.int64) # We will use this for the fixed point version
 zpk = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='zpk')   # Just for the purpose of displaying
                                                                                     # pz plot
 [w, H] = signal.freqz_zpk(z=zpk[0], p=zpk[1], k=zpk[2], worN=n_freqsamples)   # Get the frequency response (just for displaying)
@@ -149,6 +229,7 @@ xscale = max(np.abs(xmin), np.abs(xmax)) + 1    # The plus 1 here is to make sur
                                                 # strictly below 1
 zi = signal.sosfilt_zi(sos) # Get the initial state based on unit input signal's steady state response
 ymax_vals_old = np.empty(shape = (sos.shape[0], ))
+quant_error = []
 for findex in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of data at a time
                                                            # to prevent overuse of RAM. 
     wf.setpos(wf.getframerate()*findex)
@@ -161,6 +242,14 @@ for findex in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of da
                                                   # next set of samples 
     ymax_vals_old = np.maximum(ymax_vals, ymax_vals_old) # Keep updating the max values of sos
                                                          # section outputs   
+
+#    # Sending same input data through fixed point DF1 filter to calculate quantization noise
+#    x_fp = (np.round(xsamples*(2**(x_res-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
+#    yfp, buf_vals, sat_count = sosfilt_fp(sos_fp, x_fp, buf_vals)
+#
+#    # Compare the full precision floating point output with fixed point output and calculate the quantization
+#    # noise
+#    quant_error.append(np.mean((y-yfp)**2))    
 
  
 # --------------------------- Visualisation ---------------------------------------
