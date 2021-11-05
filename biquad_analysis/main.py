@@ -106,50 +106,53 @@ def sosfilt(sos, x, zi):
 #                    numerator and denominator coefficients have the same resolution
 #         mul_out_res - resolution of multiplier output (bits)
 #         acc_width - Accumulator width in bits
-#         final_shift_up - No. of bits by which adder output must be shifted before
-#                            assigning the filter output value
+#         final_shift - No. of bits by which adder output must be shifted before
+#                       assigning the filter output value. If this is a positive value,
+#                       then the result is shifted up. Otherwise, it is shifted down.
 #
 # Outputs: y_fp - Output of the filter in int64
 #          buf_vals_f - Final values of the DF1 buffer
 #          sat_flag - Saturation flag. Set to 1 if saturation occurred during accumulation
 #                     or when accumulator output is assigned to the output
 # ----------------------------------------------------------------------------------------
-def sosfilt_fp(sos_fp, x_fp, buf_vals_i, xy_res, coef_res, mul_out_res, acc_width, final_shift_down):
+def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width, final_shift):
     # Initialize return value(s)
-    sat_flag = False
+    y_fp = np.empty(shape = x_fp.shape)
+    sat_count = 0
 
     # Make sure input parameters aren't an illegal combination
-    if xy_res > 32 or coef_res > 32 or mul_out_res > 64 or adder_width > 64: 
+    if xy_res > 32 or coef_res > 32 or mul_out_res > 64 or acc_width > 64: 
         print('Error: Bit resolution of some input parameter out of acceptable values')
         sys.exit()
 
-    mul_shift_down = xy_res + coef_res - 1 - mul_out_res    # Some constants which will be 
-                                                            # useful in the loop, but we 
-                                                            # don't want to compute them
-                                                            # again and again
+    mul_shift_down = xy_res + coef_res - mul_out_res    # Some constants which will be 
+                                                        # useful in the loop, but we 
+                                                        # don't want to compute them
+                                                        # again and again.
 
-    for x in x_fp: # We proceed sample-by-sample
+    for sample_idx,x in enumerate(x_fp): # We proceed sample-by-sample
         x_biquad = x # For the first biquad, biquad input is same as the filter input
         for sosidx,(b0,b1,b2,a0,a1,a2) in enumerate(sos_fp):
-            acc = (b0 * xbiquad >> mul_shift_down) +                # Note that we are taking  
-                  (b1 * buf_val[sosidx][0] >> mul_shift_down) +     # some liberty here because
-                  (b2 * buf_val[sosidx][1] >> mul_shift_down) +     # in an actual hardware, each
-                  (a1 * buf_val[sosidx][2] >> mul_shift_down) +     # multiplication will happen
-                  (a2 * buf_val[sosidx][3] >> mul_shift_down)       # one at a time along with 
-                                                                    # accumulation and accumulator
-                                                                    # could overflow any time. We
-                                                                    # instead do the who MAC operation
-                                                                    # in one shot and saturate at
-                                                                    # end. 
+            # Note that we are taking some liberty below because in an actual hardware, each    
+            # multiplication will happen one at a time along with accumulation and accumulator    
+            # could overflow any time. We instead do the who MAC operation in one shot and 
+            # saturate at end.                           
+            acc = ((b0 * x_biquad) >> mul_shift_down) + \
+                  ((b1 * buf_vals[sosidx][0]) >> mul_shift_down) + \
+                  ((b2 * buf_vals[sosidx][1]) >> mul_shift_down) + \
+                  ((a1 * buf_vals[sosidx][2]) >> mul_shift_down) + \
+                  ((a2 * buf_vals[sosidx][3]) >> mul_shift_down)     
             
             if np.abs(acc) > (2**(acc_width-1)):                
-                sat_flag = True
-                y_biquad = (2**(xyres-1))-1 if acc > 0 else 2**(xyres-1)   # Max out the output
+                sat_count = sat_count + 1
+                y_biquad = (2**(xy_res-1))-1 if acc > 0 else 2**(xy_res-1)   # Max out the output
             else:
-                temp_out = acc << final_shift_up
-                if np.abs(temp_out) > (2**(xyres-1)):                
-                    sat_flag = True
-                    y_biquad = (2**(xyres-1))-1 if temp_out > 0 else 2**(xyres-1)   # Max out the output
+                temp_out = acc << final_shift if final_shift > 0 else acc >> final_shift
+                if np.abs(temp_out) > (2**(xy_res-1)):                
+                    sat_count = sat_count + 1
+                    y_biquad = (2**(xy_res-1))-1 if temp_out > 0 else 2**(xy_res-1)   # Max out the output
+                else:
+                    y_biquad = temp_out
              
             x_biquad = y_biquad # For the next sos, the output of this sos is its input                     
             
@@ -158,26 +161,33 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals_i, xy_res, coef_res, mul_out_res, acc_widt
             # biquads will be updated simultaneously. We are doing it one sos at a time for 
             # algorithmic simplicity. Both give same results. For the purpose of this code,
             # it is OK to do this
-            buf_val[sosidx][0] = xbiquad
-            buf_val[sosidx][1] = buf_val[sosidx][0]
-            buf_val[sosidx][2] = ybiquad
-            buf_val[sosidx][3] = buf_val[sosidx][2]
+            buf_vals[sosidx][0] = x_biquad
+            buf_vals[sosidx][1] = buf_vals[sosidx][0]
+            buf_vals[sosidx][2] = y_biquad
+            buf_vals[sosidx][3] = buf_vals[sosidx][2]
 
-        y_fp = y_biquad # Last sos output is also the overall output of the filter
+        y_fp[sample_idx] = y_biquad # Last sos output is also the overall output of the filter
 
-        
-            
+    # Out of the main loop.         
+    return y_fp, buf_vals, sat_count      
 # ---------------------------------- Main code starts here ---------------------------------------------
 # Filter paramters
 Fs = 48000 # Hz. sampling frequency
 cutoff_freq = np.pi/4   # radians. Angular frequency
 order = 8 # no unit. IIR filter order. Keep it an even number for simplicity
-n_freqsamples = 128
+n_freqsamples = 128 # no unit. 
+
 # Derived parameters
 Ts = 1/Fs # seconds. Time difference between two consecutive samples
 
-coef_res = 32
-coef_int_bits = 2
+# Parameters related to fixed point operations
+coef_res = 32 # bits
+coef_int_bits = 2 # bits. This is without considering the sign bit
+xy_res = 32 # bits
+xy_int_bits = 0 # bits. 
+mul_out_res = 32 # bits. This is the output of the multiplier that goes into the accumulator
+acc_width = 40 # bits. Width of the accumulator. 
+final_shift = 1 # bits
 
 # Design filter 
 sos = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='sos')
@@ -230,6 +240,7 @@ xscale = max(np.abs(xmin), np.abs(xmax)) + 1    # The plus 1 here is to make sur
 zi = signal.sosfilt_zi(sos) # Get the initial state based on unit input signal's steady state response
 ymax_vals_old = np.empty(shape = (sos.shape[0], ))
 quant_error = []
+sat_count_array = []
 for findex in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of data at a time
                                                            # to prevent overuse of RAM. 
     wf.setpos(wf.getframerate()*findex)
@@ -243,13 +254,22 @@ for findex in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of da
     ymax_vals_old = np.maximum(ymax_vals, ymax_vals_old) # Keep updating the max values of sos
                                                          # section outputs   
 
-#    # Sending same input data through fixed point DF1 filter to calculate quantization noise
-#    x_fp = (np.round(xsamples*(2**(x_res-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
-#    yfp, buf_vals, sat_count = sosfilt_fp(sos_fp, x_fp, buf_vals)
-#
-#    # Compare the full precision floating point output with fixed point output and calculate the quantization
-#    # noise
-#    quant_error.append(np.mean((y-yfp)**2))    
+    # Sending same input data through fixed point DF1 filter to calculate quantization noise
+    x_fp = (np.round(xsamples*(2**(xy_res-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
+    buf_vals = np.zeros([4, sos.shape[0]]).astype(np.int64)
+    yfp, buf_vals, sat_count = sosfilt_fp(sos_fp = sos_fp, 
+                                          x_fp = x_fp >> 2, 
+                                          buf_vals = buf_vals, 
+                                          xy_res=xy_res, 
+                                          coef_res = coef_res,
+                                          mul_out_res = mul_out_res,
+                                          acc_width = acc_width,
+                                          final_shift = final_shift)
+    sat_count_array.append(sat_count)
+
+    # Compare the full precision floating point output with fixed point output and calculate the quantization
+    # noise
+    quant_error.append(np.mean((y-yfp)**2))    
 
  
 # --------------------------- Visualisation ---------------------------------------
