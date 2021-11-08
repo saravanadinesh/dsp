@@ -117,7 +117,7 @@ def sosfilt(sos, x, zi):
 # ----------------------------------------------------------------------------------------
 def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width, final_shift):
     # Initialize return value(s)
-    y_fp = np.empty(shape = x_fp.shape)
+    y_fp = np.zeros(shape = x_fp.shape).astype(np.int64)
     sat_count = 0
 
     # Make sure input parameters aren't an illegal combination
@@ -139,32 +139,32 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width,
             # saturate at end.                           
             acc = ((b0 * x_biquad) >> mul_shift_down) + \
                   ((b1 * buf_vals[sosidx][0]) >> mul_shift_down) + \
-                  ((b2 * buf_vals[sosidx][1]) >> mul_shift_down) + \
-                  ((a1 * buf_vals[sosidx][2]) >> mul_shift_down) + \
+                  ((b2 * buf_vals[sosidx][1]) >> mul_shift_down) - \
+                  ((a1 * buf_vals[sosidx][2]) >> mul_shift_down) - \
                   ((a2 * buf_vals[sosidx][3]) >> mul_shift_down)     
             
             if np.abs(acc) > (2**(acc_width-1)):                
                 sat_count = sat_count + 1
-                y_biquad = (2**(xy_res-1))-1 if acc > 0 else 2**(xy_res-1)   # Max out the output
+                y_biquad = (2**(xy_res-1))-1 if acc > 0 else -1*(2**(xy_res-1))   # Max out the output
             else:
                 temp_out = acc << final_shift if final_shift > 0 else acc >> final_shift
                 if np.abs(temp_out) > (2**(xy_res-1)):                
                     sat_count = sat_count + 1
-                    y_biquad = (2**(xy_res-1))-1 if temp_out > 0 else 2**(xy_res-1)   # Max out the output
+                    y_biquad = (2**(xy_res-1))-1 if temp_out > 0 else -1*(2**(xy_res-1))   # Max out the output
                 else:
                     y_biquad = temp_out
              
-            x_biquad = y_biquad # For the next sos, the output of this sos is its input                     
-            
             # Shift values in registers so that we will have updated buffers when we process
             # the  input sample. Note that, in an actual hardware, all buffer values of all
             # biquads will be updated simultaneously. We are doing it one sos at a time for 
             # algorithmic simplicity. Both give same results. For the purpose of this code,
             # it is OK to do this
-            buf_vals[sosidx][0] = x_biquad
             buf_vals[sosidx][1] = buf_vals[sosidx][0]
-            buf_vals[sosidx][2] = y_biquad
+            buf_vals[sosidx][0] = x_biquad
             buf_vals[sosidx][3] = buf_vals[sosidx][2]
+            buf_vals[sosidx][2] = y_biquad
+            
+            x_biquad = y_biquad # For the next sos, the output of this sos is its input                     
 
         y_fp[sample_idx] = y_biquad # Last sos output is also the overall output of the filter
 
@@ -172,13 +172,9 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width,
     return y_fp, buf_vals, sat_count      
 # ---------------------------------- Main code starts here ---------------------------------------------
 # Filter paramters
-Fs = 48000 # Hz. sampling frequency
 cutoff_freq = np.pi/4   # radians. Angular frequency
 order = 8 # no unit. IIR filter order. Keep it an even number for simplicity
 n_freqsamples = 128 # no unit. 
-
-# Derived parameters
-Ts = 1/Fs # seconds. Time difference between two consecutive samples
 
 # Parameters related to fixed point operations
 coef_res = 32 # bits
@@ -187,7 +183,7 @@ xy_res = 32 # bits
 xy_int_bits = 0 # bits. 
 mul_out_res = 32 # bits. This is the output of the multiplier that goes into the accumulator
 acc_width = 40 # bits. Width of the accumulator. 
-final_shift = 1 # bits
+final_shift = 3 # bits
 
 # Design filter 
 sos = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='sos')
@@ -241,12 +237,13 @@ zi = signal.sosfilt_zi(sos) # Get the initial state based on unit input signal's
 ymax_vals_old = np.empty(shape = (sos.shape[0], ))
 quant_error = []
 sat_count_array = []
-for findex in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of data at a time
-                                                           # to prevent overuse of RAM. 
-    wf.setpos(wf.getframerate()*findex)
-    rawdata = wf.readframes(wf.getframerate()) # Read 1 sec worth of samples
+frate = wf.getframerate()
+for findex in range(wf.getnframes()//frate+1):  # Process 1 sec of data at a time
+                                                # to prevent overuse of RAM. 
+    wf.setpos(frate*findex)
+    rawdata = wf.readframes(frate) # Read 1 sec worth of samples
     temp = np.frombuffer(rawdata, dtype=dt) # Converting bytes object to np array
-    xsamples = temp.reshape((wf.getnchannels(),-1), order='F')[0]/xscale    # Converting bytes object to np
+    xsamples = temp.reshape((wf.getnchannels(),-1), order='F')[0]/(xscale*8)    # Converting bytes object to np
                                                                             # array and normalising it 
     y, zi, ymax_vals = sosfilt(sos, xsamples, zi) # Output state zf returned is assigned to zi so that
                                                   # it will automatically become input state for the 
@@ -255,10 +252,10 @@ for findex in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of da
                                                          # section outputs   
 
     # Sending same input data through fixed point DF1 filter to calculate quantization noise
-    x_fp = (np.round(xsamples*(2**(xy_res-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
-    buf_vals = np.zeros([4, sos.shape[0]]).astype(np.int64)
-    yfp, buf_vals, sat_count = sosfilt_fp(sos_fp = sos_fp, 
-                                          x_fp = x_fp >> 2, 
+    x_fp = (np.round(xsamples*(2**(xy_res-xy_int_bits-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
+    buf_vals = np.zeros([sos_fp.shape[0], 4]).astype(np.int64)
+    y_fp, buf_vals, sat_count = sosfilt_fp(sos_fp = sos_fp, 
+                                          x_fp = x_fp, 
                                           buf_vals = buf_vals, 
                                           xy_res=xy_res, 
                                           coef_res = coef_res,
@@ -269,8 +266,8 @@ for findex in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of da
 
     # Compare the full precision floating point output with fixed point output and calculate the quantization
     # noise
-    quant_error.append(np.mean((y-yfp)**2))    
-
+    quant_error.append(np.mean((y[frate//2:]-y_fp[frate//2:]/(2**(31)))**2))    
+    print('Processed 1 sec of data')
  
 # --------------------------- Visualisation ---------------------------------------
 fig1 = make_subplots(rows=2,cols=1, specs=[[{'type':'polar'}],[{'type':'xy'}]],
@@ -297,3 +294,12 @@ fig1.update_layout({'xaxis':{'title':{'text':'Frequency (radians)'}}})
 fig1.update_layout({'yaxis':{'title':{'text':'Magnitude (dB)'}}})
 
 fig1.show()
+
+fig2 = go.Figure()
+yscaled = y_fp/(2**31)
+xscaled = x_fp/(2**31)
+lastidx = frate 
+fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=y[:lastidx], name = 'Floating point output'))
+fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=yscaled[:lastidx], name='Fixed-point output'))
+fig2.show()
+
