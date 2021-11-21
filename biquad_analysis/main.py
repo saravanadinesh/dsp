@@ -90,7 +90,30 @@ def sosfilt(sos, x, zi):
 
     return y, zf, ymax_vals           
 
- 
+# ----------------------------------------------------------------------------------------
+# is_sos_stable(sos_fp, fracbits)
+#   Checks if a given sos filter with fixed point coefficients is stable using Schur-Cohn
+# stability criterion
+#
+# Inputs: sos_fp - sos coef array with fixed point coefficients
+#         fracbits - No. of fractional bits in the coefficients
+#
+# Output: true/false - Indicating whether the filter is stable or not
+# ----------------------------------------------------------------------------------------
+def is_sos_stable(sos_fp, fracbits):
+    fp_1 = 1 << fracbits # Just 1 in fixed point representatin
+    for b0,b1,b2,a0,a1,a2 in sos_fp:
+        if np.abs(a2) < fp_1:
+            if np.abs(fp_1+a2) > np.abs(a1):
+                continue
+            else:
+                return False
+        else:
+            return False
+    
+    return True 
+            
+
 # ----------------------------------------------------------------------------------------
 # sosfilt_fp
 #   Filtering using SOS sections in DF1. This the fixed point version of sosfilt, but this
@@ -188,6 +211,18 @@ final_shift = 3 # bits
 # Design filter 
 sos = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='sos')
 sos_fp = (np.round(sos*(2**(coef_res-coef_int_bits-1)))).astype(np.int64) # We will use this for the fixed point version
+if not is_sos_stable(sos_fp, coef_res-coef_int_bits-1): # Proprietary function to check filter stability after the 
+                                                        # coefficicents were converted to fixed point in the previous line.
+                                                        # The possibility of the rounding operation rendering a stable filter
+                                                        # unstable is extremely rare, but it is a good idea to make it a habit
+                                                        # to always check for filter stability anytime we mess with its
+                                                        # coefficients. Furthermore, I didn't find a python library function 
+                                                        # that checks IIR filter stability of second order sections and took 
+                                                        # the opportunity to implement one
+    print('Fixed point IIR is unstable')
+    system.exit()
+                                                                      
+
 zpk = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='zpk')   # Just for the purpose of displaying
                                                                                     # pz plot
 [w, H] = signal.freqz_zpk(z=zpk[0], p=zpk[1], k=zpk[2], worN=n_freqsamples)   # Get the frequency response (just for displaying)
@@ -215,17 +250,16 @@ except Exception as e:
     print('Error: Input file could not be opened')
     sys.exit(0)
  
-# TODO: Add checks for mono and sample width other than standard ones
 dt = {1:np.int8, 2:np.int16, 4:np.int32}.get(wf.getsampwidth())
-
-#wout = wave.open('output.wav', 'w')
-#wout.setparams(wf.getparams())
+if dt == None:
+    print('Unsupported input data resolution')
+    sys.exit(0)
 
 
 # We want to normalize the input signal to have a max value of 1 for two reasons:
 #   1. It is easier to judge how big the output, intermediate stages in the biquad got by visual 
 #      inspection if the input max is 1
-#   2. We wabt ti naje sure the input covers max dynamic range possible as we are trying to test
+#   2. We want to nake sure the input covers max dynamic range possible as we are trying to test
 #      how big different stages in the IIR biquad sections can get
 xmin, xmax = getminmax() # Function calculates the min, max (signed) values of the input data
 xscale = max(np.abs(xmin), np.abs(xmax)) + 1    # The plus 1 here is to make sure we normalise the input 
@@ -238,13 +272,15 @@ ymax_vals_old = np.empty(shape = (sos.shape[0], ))
 quant_error = []
 sat_count_array = []
 frate = wf.getframerate()
-for findex in range(wf.getnframes()//frate+1):  # Process 1 sec of data at a time
-                                                # to prevent overuse of RAM. 
+total_seconds = wf.getnframes()//frate+1 # Total number of seconds in the data
+print('About to process', total_seconds, 'seconds of data')
+for findex in range(total_seconds): # Process 1 sec of data at a time
+                                    # to prevent overuse of RAM. 
     wf.setpos(frate*findex)
     rawdata = wf.readframes(frate) # Read 1 sec worth of samples
     temp = np.frombuffer(rawdata, dtype=dt) # Converting bytes object to np array
-    xsamples = temp.reshape((wf.getnchannels(),-1), order='F')[0]/(xscale*8)    # Converting bytes object to np
-                                                                            # array and normalising it 
+    xsamples = temp.reshape((wf.getnchannels(),-1), order='F')[0]/(xscale*8)    # Converting bytes object to
+                                                                                # np array and normalising it 
     y, zi, ymax_vals = sosfilt(sos, xsamples, zi) # Output state zf returned is assigned to zi so that
                                                   # it will automatically become input state for the 
                                                   # next set of samples 
@@ -266,8 +302,9 @@ for findex in range(wf.getnframes()//frate+1):  # Process 1 sec of data at a tim
 
     # Compare the full precision floating point output with fixed point output and calculate the quantization
     # noise
-    quant_error.append(np.mean((y[frate//2:]-y_fp[frate//2:]/(2**(31)))**2))    
-    print('Processed 1 sec of data')
+    # quant_error.append(np.mean((y[y.shape[0]//8:]-y_fp[y.shape[0]//8:]/(2**(31)))**2))    
+    quant_error.append(np.mean((y-y_fp/(2**(31)))**2))    
+    print('Processed',findex+1, 'seconds of data')
  
 # --------------------------- Visualisation ---------------------------------------
 fig1 = make_subplots(rows=2,cols=1, specs=[[{'type':'polar'}],[{'type':'xy'}]],
@@ -295,11 +332,11 @@ fig1.update_layout({'yaxis':{'title':{'text':'Magnitude (dB)'}}})
 
 fig1.show()
 
-fig2 = go.Figure()
-yscaled = y_fp/(2**31)
-xscaled = x_fp/(2**31)
-lastidx = frate 
-fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=y[:lastidx], name = 'Floating point output'))
-fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=yscaled[:lastidx], name='Fixed-point output'))
-fig2.show()
+#fig2 = go.Figure()
+#yscaled = y_fp/(2**31)
+#xscaled = x_fp/(2**31)
+#lastidx = frate 
+#fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=y[:lastidx], name = 'Floating point output'))
+#fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=yscaled[:lastidx], name='Fixed-point output'))
+#fig2.show()
 
