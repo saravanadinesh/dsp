@@ -3,10 +3,15 @@
     bit-width of registers, adders, multipliers in the biquad. We
     will use a Butterworth IIR LPF to do this analysis """
 
-import numpy as np
 import plotly.graph_objects as go 
-import plotly.express as px
 from plotly.subplots import make_subplots
+
+import dash
+import dash_core_components as dcc
+import dash_html_components as html
+from dash.dependencies import Input, Output, State
+
+import numpy as np
 from scipy import signal 
 from sklearn.linear_model import LinearRegression
 import sklearn.metrics as metrics
@@ -16,8 +21,158 @@ import wave
 
 # Declare globals
 wf = None
+params = { 'coef_res':32, 'xy_res':32, 'mul_out_res':32, 'scale_factor':None}
+
+# Filter paramters
+cutoff_freq = np.pi/4   # radians. Angular frequency
+order = 8 # no unit. IIR filter order. Keep it an even number for simplicity
+n_freqsamples = 128 # no unit. 
+
+# Design filter 
+sos = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='sos')
+zpk = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='zpk')   # Just for the purpose of displaying
+                                                                                    # pz plot
+
+# Find time domain impulse response of the system
+# Note: We have to do some monkeying around to find it mainly because the signal library's
+# dimpulse function unnecessarily overcomplicates finding impulse response of a system. 
+zpkl = list(zpk)
+zpkl.append(1)
+zpkt = tuple(zpkl)
+hn_samples = 500 # This is how many samples to display to the user
+hn_times, hn_temp = signal.dimpulse(system=zpkt, n = hn_samples) 
+hn = hn_temp[0].flatten() 
+
+# Find out an h[n] based scale factor
+hn_scalefactor = np.sum(np.abs(hn[:50])) # 50 samples is the default. User can change later
 
 
+temp_hnfig = {'data':[go.Scatter(x=np.arange(0,500)),
+                      go.Scatter(x=np.arange(0,50), 
+                                 y=hn[:50] ),
+                      go.Scatter(x=[300], y=[0.7], 
+                                 text=r'$\text{Samples used to find } \sum{|h[n]|}$', 
+                                 mode='text', textfont_size=14)],
+              'layout': go.Layout(
+                            title={'text': 'Filter impulse response', 'font': {'color': 'white'}, 'x': 0.5},
+                            xaxis_title = 'n (samples)',
+                            yaxis_title = 'h[n]',
+                            autosize=True,
+                            colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                            template='plotly_dark',
+                            paper_bgcolor='rgba(0, 0, 0, 0)',
+                            plot_bgcolor='rgba(0, 0, 0, 0)',
+                            margin={'b': 75},
+                            xaxis={'range':[0,500]},
+                            yaxis={'range':[0, 1]}
+                        )
+            }
+temp_errfig = {'data':[],
+              'layout': go.Layout(
+                            title={'text': 'Mean square error distribution', 'font': {'color': 'white'}, 'x': 0.5},
+                            xaxis_title = 'MSE (no unit)',
+                            yaxis_title = 'Relative frequency',
+                            autosize=True,
+                            colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                            template='plotly_dark',
+                            paper_bgcolor='rgba(0, 0, 0, 0)',
+                            plot_bgcolor='rgba(0, 0, 0, 0)',
+                            margin={'b': 75},
+                        )
+            }
+
+
+old_figure = temp_hnfig, temp_errfig    # We are doing this so that even before we have some chart to show,
+                                        # we wan't to display empty charts with proper layout
+
+# App layout
+app = dash.Dash(__name__)
+app.config.suppress_callback_exceptions = True
+
+app.layout = html.Div(
+    children=[
+        html.Div(
+            className='row',
+            children=[
+                html.Div(className='three columns div-user-controls',   # This is the left block of the app
+                         children=[
+                            html.Div(
+                                style={'height':'20%'},
+                                children=[
+                                    html.H2("Wav File Inspector"),
+                                    html.P("Type in wav filename"), 
+                                    dcc.Input(id="filename", type="text"),
+                                    html.Span(id="path-validity"),
+                                    html.Div(id="filename-output")
+                                ]
+                            ), 
+                            html.Div(
+                                style={'height':'20%'},
+                                children=[
+                                    html.P("Coefficient bit resolution (8 to 32)"), 
+                                    dcc.Input(id="coefi-res", type="number", min=8, max=32, step=1, value=params['coef_res']),
+                                ]
+                            ), 
+                            html.Div(
+                                style={'height':'20%'},
+                                children=[
+                                    html.P("Filter input bit resolution (8 to 32)"), 
+                                    dcc.Input(id="xy-res", type="number", min=8, max=32, step=1, value=params['xy_res']),
+                                ]
+                            ), 
+                            html.Div(
+                                style={'height':'20%'},
+                                children=[
+                                    html.P("Multiplier bit resolution (8 to 32)"), 
+                                    dcc.Input(id="mul-out-res", type="number", min=8, max=60, step=1, value=params['mul_out_res']),
+                                ]
+                            ), 
+                            html.Div(
+                                className='div-for-radio',
+                                style={'height':'25%'},
+                                children=[
+                                   html.H4("Input scaling method:", style={"padding-top":"30px"}),
+                                   dcc.RadioItems(
+                                        id='scaling-method',
+                                        options=[
+                                                {'label':'Use sum(abs(h[n]))', 'value':'hn'},
+                                                {'label':'Use custome', 'value': 'custom'}
+                                        ],
+                                        value = 'hn'
+                                   )
+                                ]
+                            ),
+                            html.Div(
+                                style={'height':'20%'},
+                                children=[
+                                    html.P("Custom scale factor"),
+                                    dcc.Input(id="custom-scale", type="number"),
+                                ]
+                            ), 
+                            html.Button('Run', id='run', n_clicks=0, style={'color': '#FF4F00', 'margin-top':'30px'})
+                         ],
+                ),
+                html.Div(className='nine columns div-for-charts bg-grey',   # This is the right block of the app
+                         children=[
+                            dcc.Graph(id='hn-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_hnfig),
+                            html.Div(
+                                children=[
+                                    html.Div(
+                                        className='div-for-slider',
+                                        children=[
+                                            dcc.Slider( id = "hn-slider", min=0, max=500, step=1, value=50)
+                                        ]   
+                                    ),
+                                ],
+                                style={'height':'6%'}
+                            ),
+                            dcc.Graph(id='err-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=temp_errfig)
+                         ]
+                )
+            ]
+        )
+    ]
+)
 # -----------------------------  Function definitions -------------------------------------------------
 #------------------------------------------------------------------------------------
 # getminmax (copied from wavinspector project.)
@@ -192,151 +347,227 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width,
         y_fp[sample_idx] = y_biquad # Last sos output is also the overall output of the filter
 
     # Out of the main loop.         
-    return y_fp, buf_vals, sat_count      
+    return y_fp, buf_vals, sat_count   
+
+   
 # ---------------------------------- Main code starts here ---------------------------------------------
-# Filter paramters
-cutoff_freq = np.pi/4   # radians. Angular frequency
-order = 8 # no unit. IIR filter order. Keep it an even number for simplicity
-n_freqsamples = 128 # no unit. 
+def dsp_task(sos, coef_res, xy_res, mul_out_res, scale_factor):
+    global wf
 
-# Parameters related to fixed point operations
-coef_res = 32 # bits
-coef_int_bits = 2 # bits. This is without considering the sign bit
-xy_res = 32 # bits
-xy_int_bits = 0 # bits. 
-mul_out_res = 32 # bits. This is the output of the multiplier that goes into the accumulator
-acc_width = 40 # bits. Width of the accumulator. 
-final_shift = 3 # bits
-
-# Design filter 
-sos = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='sos')
-sos_fp = (np.round(sos*(2**(coef_res-coef_int_bits-1)))).astype(np.int64) # We will use this for the fixed point version
-if not is_sos_stable(sos_fp, coef_res-coef_int_bits-1): # Proprietary function to check filter stability after the 
-                                                        # coefficicents were converted to fixed point in the previous line.
-                                                        # The possibility of the rounding operation rendering a stable filter
-                                                        # unstable is extremely rare, but it is a good idea to make it a habit
-                                                        # to always check for filter stability anytime we mess with its
-                                                        # coefficients. Furthermore, I didn't find a python library function 
-                                                        # that checks IIR filter stability of second order sections and took 
-                                                        # the opportunity to implement one
-    print('Fixed point IIR is unstable')
-    system.exit()
-                                                                      
-
-zpk = signal.butter(btype='lowpass', N=order, Wn=cutoff_freq/np.pi, output='zpk')   # Just for the purpose of displaying
-                                                                                    # pz plot
-[w, H] = signal.freqz_zpk(z=zpk[0], p=zpk[1], k=zpk[2], worN=n_freqsamples)   # Get the frequency response (just for displaying)
-
-# Find filter roll-off by fitting a line to the transition band in the 
-# immediate vicinity of the cutoff frequency 
-Hmag = 20*np.log10(np.abs(H))
-start_fidx = int(cutoff_freq*n_freqsamples/np.pi)                               # line x axis starts from cutoff frequency
-end_fidx = start_fidx+25 if (start_fidx+25) < n_freqsamples else n_freqsamples  # and ends 25 frequency samples later
-log2Freqs = np.log2(w[start_fidx:end_fidx]) # Select frequencies of interest, convert them to octave
-
-x = log2Freqs.reshape((-1,1))   # Line fitting using sklearn lin regression function
-y = Hmag[start_fidx:end_fidx]
-model = LinearRegression()
-model.fit(x,y)
-rolloff = model.coef_   # Slope of the fitted line is roll off in dB/8ve
-p = model.predict(x)
-
-
-# Send a test input through the input to see how large the output can get
-input_filename = '/home/dinesh/Documents/ClassicalWavFiles/mozart_minuet.wav'
-try:
-    wf = wave.open(input_filename, 'r')
-except Exception as e:
-    print('Error: Input file could not be opened')
-    sys.exit(0)
+    # Parameters related to fixed point operations
+    coef_int_bits = 2 # bits. This is without considering the sign bit
+    xy_int_bits = 0 # bits. 
+    acc_width = 40 # bits. Width of the accumulator. 
+    final_shift = 3 # bits
+    
+    sos_fp = (np.round(sos*(2**(coef_res-coef_int_bits-1)))).astype(np.int64) # We will use this for the fixed point version
+    if not is_sos_stable(sos_fp, coef_res-coef_int_bits-1): # Proprietary function to check filter stability after the 
+                                                            # coefficicents were converted to fixed point in the previous line.
+                                                            # The possibility of the rounding operation rendering a stable filter
+                                                            # unstable is extremely rare, but it is a good idea to make it a habit
+                                                            # to always check for filter stability anytime we mess with its
+                                                            # coefficients. Furthermore, I didn't find a python library function 
+                                                            # that checks IIR filter stability of second order sections and took 
+                                                            # the opportunity to implement one
+        print('Fixed point IIR is unstable')
+        system.exit()
+                                                                          
+    
+    
+    # Send a test input through the input to see how large the output can get
+    input_filename = '/home/dinesh/Documents/ClassicalWavFiles/mozart_minuet.wav'
+    try:
+        wf = wave.open(input_filename, 'r')
+    except Exception as e:
+        print('Error: Input file could not be opened')
+        sys.exit(0)
+     
+    dt = {1:np.int8, 2:np.int16, 4:np.int32}.get(wf.getsampwidth())
+    if dt == None:
+        print('Unsupported input data resolution')
+        sys.exit(0)
+    
+    
+    # We want to normalize the input signal to have a max value of 1 for two reasons:
+    #   1. It is easier to judge how big the output, intermediate stages in the biquad got by visual 
+    #      inspection if the input max is 1
+    #   2. We want to nake sure the input covers max dynamic range possible as we are trying to test
+    #      how big different stages in the IIR biquad sections can get
+    #xmin, xmax = getminmax() # Function calculates the min, max (signed) values of the input data
+    #xscale = max(np.abs(xmin), np.abs(xmax)) + 1    # The plus 1 here is to make sure we normalise the input 
+    #                                                # to have values strictly less than 1. Typically xscale
+    #                                                # value will be in thousands. So adding a 1 doesn't change
+    #                                                # the value a lot. But it ensure max value of input remains
+    #                                                # strictly below 1
+    zi = signal.sosfilt_zi(sos) # Get the initial state based on unit input signal's steady state response
+    ymax_vals_old = np.empty(shape = (sos.shape[0], ))
+    quant_error = []
+    sat_count_array = []
+    frate = wf.getframerate()
+    total_seconds = wf.getnframes()//frate+1 # Total number of seconds in the data
+    print('About to process', total_seconds, 'seconds of data')
+    for findex in range(total_seconds): # Process 1 sec of data at a time
+                                        # to prevent overuse of RAM. 
+        wf.setpos(frate*findex)
+        rawdata = wf.readframes(frate) # Read 1 sec worth of samples
+        temp = np.frombuffer(rawdata, dtype=dt) # Converting bytes object to np array
+        xsamples = temp.reshape((wf.getnchannels(),-1), order='F')[0]/scale_factor  # Converting bytes object to
+                                                                                    # np array and normalising it 
+        y, zi, ymax_vals = sosfilt(sos, xsamples, zi) # Output state zf returned is assigned to zi so that
+                                                      # it will automatically become input state for the 
+                                                      # next set of samples 
+        ymax_vals_old = np.maximum(ymax_vals, ymax_vals_old) # Keep updating the max values of sos
+                                                             # section outputs   
+    
+        # Sending same input data through fixed point DF1 filter to calculate quantization noise
+        x_fp = (np.round(xsamples*(2**(xy_res-xy_int_bits-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
+        buf_vals = np.zeros([sos_fp.shape[0], 4]).astype(np.int64)
+        y_fp, buf_vals, sat_count = sosfilt_fp(sos_fp = sos_fp, 
+                                              x_fp = x_fp, 
+                                              buf_vals = buf_vals, 
+                                              xy_res=xy_res, 
+                                              coef_res = coef_res,
+                                              mul_out_res = mul_out_res,
+                                              acc_width = acc_width,
+                                              final_shift = final_shift)
+        sat_count_array.append(sat_count)
+    
+        # Compare the full precision floating point output with fixed point output and calculate the quantization
+        # noise
+        # quant_error.append(np.mean((y[y.shape[0]//8:]-y_fp[y.shape[0]//8:]/(2**(31)))**2))    
+        quant_error.append(np.mean((y-y_fp/(2**(31)))**2))    
+        print('Processed',findex+1, 'seconds of data')
+    
+    return quant_error
  
-dt = {1:np.int8, 2:np.int16, 4:np.int32}.get(wf.getsampwidth())
-if dt == None:
-    print('Unsupported input data resolution')
-    sys.exit(0)
+
+# Main callback function. Most inputs, all outtputs have been lumped up into this function
+@app.callback(Output('hn-graph', 'figure'),
+                Output('err-graph', 'figure'),
+                Output('filename-output', 'children'), 
+                Output('path-validity', 'children'), 
+                Output('path-validity', 'style'),
+                [Input('filename', 'value'), 
+                Input('filename','n_submit'),
+                Input('coef-res', 'value'),
+                Input('xy-res', 'value'),
+                Input('mul-out-res', 'value'),
+                Input('scaling-method', 'value'),
+                Input('custom-scale', 'value'),
+                Input('hn-slider', 'value')])
+def update_output(input_filename, submit_times, coef_res, xy_res, mul_out_res, scaling_method, custom_scale, hn_slider):
+    global wf, params, hn, old_figure
+
+    tick_mark= '\u2714',{'font-family': 'wingdings', 'color':'Green', 'font-size':'100%', 'padding-left':'30px'}
+    cross_mark = '\u274C', {'font-family': 'wingdings', 'color':'Crimson', 'font-size':'70%', 'padding-left':'30px'}
+    
+
+    ctx = dash.callback_context # Since there are too many inputs, find which one actually triggered the callback
+    triggered_input_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    
+    if triggered_input_id == 'filename': # If filename is valid, call dsp task and plot the charts for the first time
+        if submit_times == (update_output.submit_times+1):
+            update_output.submit_times = update_output.submit_times + 1
+            if os.path.exists(input_filename):
+                if (wf != None):
+                    wf.close()
+                
+                try:
+                    wf = wave.open(input_filename, 'r')
+                except Exception as e:
+                    return *old_figure, 'File could not be opened', *cross_mark
+                
+                return *old_figure, '',*tick_mark
+            else:
+                return *old_figure, 'File does not exist',*cross_mark                 
+
+        
+        if input_filename: # Show tick or cross marks to indicate to the user that they are typing in -
+                           # a valid path 
+            if input_filename[-1] == '/': # Everytime user enters '/' check if the directory is valid
+                if os.path.exists(input_filename):
+                    return *old_figure, '', *tick_mark     
+                else:
+                    return *old_figure, 'Incorrect path', *cross_mark           
+        
+        return *old_figure, '',None, None
+    
+    # If other than filename field triggered callback call the dsp task and update the charts
+    else:
+        if triggered_input_id == 'coef-res':
+            params['coef_res'] = coef_res 
+        elif triggered_input_id == 'xy-res':
+            params['xy_res'] = xy_res 
+        elif triggered_input_id == 'mul-out-res':
+            params['xy_res'] == mul_out_res 
+        elif triggered_input_id == 'scaling-method':
+            if scaling_method == 'hn':
+                params['scale_factor'] = np.sum(np.abs(hn[:hn_slider])) 
+            elif scaling_method == 'custom':
+                params['scale_factor'] = custom_scale
+        elif triggered_input_id == 'custom-scale':
+            if scaling_method == 'custom':
+                params['scale_factor'] = custom_scale 
+        elif triggered_input_id == 'hn-slider':
+            hn_scalefactor = np.sum(np.abs(hn[:hn_slider]))
+            if scaling_method == 'hn':
+                params['scale_factor'] = np.sum(np.abs(hn[:hn_slider])) 
+            temp_hnfig = {'data':[go.Scatter(x=np.arange(0,500), y=hn),
+                                  go.Scatter(x=np.arange(0,params['hn_scale_samples']), 
+                                             y=hn[:params['hn_scale_samples']] ),
+                                  go.Scatter(x=[300], y=[0.7], 
+                                             text=r'$\text{Samples used to find } \sum{|h[n]|}$', 
+                                             mode='text', textfont_size=14)],
+                          'layout': go.Layout(
+                                        title={'text': 'Filter impulse response', 'font': {'color': 'white'}, 'x': 0.5},
+                                        xaxis_title = 'n (samples)',
+                                        yaxis_title = 'h[n]',
+                                        autosize=True,
+                                        colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                                        template='plotly_dark',
+                                        paper_bgcolor='rgba(0, 0, 0, 0)',
+                                        plot_bgcolor='rgba(0, 0, 0, 0)',
+                                        margin={'b': 75},
+                                        xaxis={'range':[0,500]},
+                                        yaxis={'range':[0, 1]}
+                                    )
+                        }
+             
+        old_figure[0] = temp_hrfig
+        return *old_figure, '',None, None
 
 
-# We want to normalize the input signal to have a max value of 1 for two reasons:
-#   1. It is easier to judge how big the output, intermediate stages in the biquad got by visual 
-#      inspection if the input max is 1
-#   2. We want to nake sure the input covers max dynamic range possible as we are trying to test
-#      how big different stages in the IIR biquad sections can get
-xmin, xmax = getminmax() # Function calculates the min, max (signed) values of the input data
-xscale = max(np.abs(xmin), np.abs(xmax)) + 1    # The plus 1 here is to make sure we normalise the input 
-                                                # to have values strictly less than 1. Typically xscale
-                                                # value will be in thousands. So adding a 1 doesn't change
-                                                # the value a lot. But it ensure max value of input remains
-                                                # strictly below 1
-zi = signal.sosfilt_zi(sos) # Get the initial state based on unit input signal's steady state response
-ymax_vals_old = np.empty(shape = (sos.shape[0], ))
-quant_error = []
-sat_count_array = []
-frate = wf.getframerate()
-total_seconds = wf.getnframes()//frate+1 # Total number of seconds in the data
-print('About to process', total_seconds, 'seconds of data')
-for findex in range(total_seconds): # Process 1 sec of data at a time
-                                    # to prevent overuse of RAM. 
-    wf.setpos(frate*findex)
-    rawdata = wf.readframes(frate) # Read 1 sec worth of samples
-    temp = np.frombuffer(rawdata, dtype=dt) # Converting bytes object to np array
-    xsamples = temp.reshape((wf.getnchannels(),-1), order='F')[0]/(xscale*8)    # Converting bytes object to
-                                                                                # np array and normalising it 
-    y, zi, ymax_vals = sosfilt(sos, xsamples, zi) # Output state zf returned is assigned to zi so that
-                                                  # it will automatically become input state for the 
-                                                  # next set of samples 
-    ymax_vals_old = np.maximum(ymax_vals, ymax_vals_old) # Keep updating the max values of sos
-                                                         # section outputs   
+@app.callback(Output('hn-graph', 'figure'),
+              Output('err-graph', 'figure'), 
+              Input('run', 'n_clicks'))
+def run(n_clicks):
+    global wf, params, sos, old_figure
 
-    # Sending same input data through fixed point DF1 filter to calculate quantization noise
-    x_fp = (np.round(xsamples*(2**(xy_res-xy_int_bits-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
-    buf_vals = np.zeros([sos_fp.shape[0], 4]).astype(np.int64)
-    y_fp, buf_vals, sat_count = sosfilt_fp(sos_fp = sos_fp, 
-                                          x_fp = x_fp, 
-                                          buf_vals = buf_vals, 
-                                          xy_res=xy_res, 
-                                          coef_res = coef_res,
-                                          mul_out_res = mul_out_res,
-                                          acc_width = acc_width,
-                                          final_shift = final_shift)
-    sat_count_array.append(sat_count)
+    if wf != None:
+        quant_error = dsp_task(sos, params['coef_res'], params['xy_res'], params['mul_out_res'], scale_factor)
+        temp_errfig = {'data':[go.Histogram(x=quant_error, histnorm='probability', nbinsx=10)],
+                      'layout': go.Layout(
+                                    title={'text': 'Mean square error distribution', 'font': {'color': 'white'}, 'x': 0.5},
+                                    xaxis_title = 'MSE (no unit)',
+                                    yaxis_title = 'Relative frequency',
+                                    autosize=True,
+                                    colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
+                                    template='plotly_dark',
+                                    paper_bgcolor='rgba(0, 0, 0, 0)',
+                                    plot_bgcolor='rgba(0, 0, 0, 0)',
+                                    margin={'b': 75},
+                                )
+                    }
 
-    # Compare the full precision floating point output with fixed point output and calculate the quantization
-    # noise
-    # quant_error.append(np.mean((y[y.shape[0]//8:]-y_fp[y.shape[0]//8:]/(2**(31)))**2))    
-    quant_error.append(np.mean((y-y_fp/(2**(31)))**2))    
-    print('Processed',findex+1, 'seconds of data')
- 
-# --------------------------- Visualisation ---------------------------------------
-fig1 = make_subplots(rows=2,cols=1, specs=[[{'type':'polar'}],[{'type':'xy'}]],
-                     subplot_titles=['Pole-zero plot', 'Frequency response'])
+        old_figure[1] = temp_errfig
+    
+    return *old_figure, # This here hasn't got a purpose - Dash demands that we always return something!
 
-## pole-zero plot
-fig1.add_trace(go.Scatterpolar( r = np.abs(zpk[0]), theta = np.angle(zpk[0])*(180/np.pi), 
-                                mode='markers', marker=dict(symbol='circle', size=12), name='zeros'), 
-               row=1, col=1)
-fig1.add_trace(go.Scatterpolar( r = np.abs(zpk[1]), theta = np.angle(zpk[1])*(180/np.pi), 
-                                mode='markers', marker=dict(symbol='x', size=12), name='poles'), 
-               row=1, col=1)
+update_output.submit_times = 0 # This variable should not be changed outside the update_output function
 
+# Run the html app
+if __name__ == '__main__':
+    app.run_server(debug=True)
 
-## Transfer function
-fig1.add_trace(go.Scatter(x=w, y=Hmag, name='Gain'),
-               row=2, col=1)
-fig1.add_trace(go.Scatter(x=w[start_fidx:end_fidx], y=p, name='Roll off'),
-               row=2, col=1)
-fig1.add_trace(go.Scatter(x=[2.5], y=[-10], text='rolloff = {} (dB/8ve)'.format(round(rolloff[0],2)), 
-               mode='text', textfont_size=14),
-               row=2, col=1)
-fig1.update_layout({'xaxis':{'title':{'text':'Frequency (radians)'}}})
-fig1.update_layout({'yaxis':{'title':{'text':'Magnitude (dB)'}}})
-
-fig1.show()
-
-#fig2 = go.Figure()
-#yscaled = y_fp/(2**31)
-#xscaled = x_fp/(2**31)
-#lastidx = frate 
-#fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=y[:lastidx], name = 'Floating point output'))
-#fig2.add_trace(go.Scatter(x=np.arange(0,lastidx), y=yscaled[:lastidx], name='Fixed-point output'))
-#fig2.show()
 
