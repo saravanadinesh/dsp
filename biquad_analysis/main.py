@@ -1,7 +1,10 @@
-""" In this code, we look at the max value the output of a biquad 
-    can get to. The objective is to determine what should be the 
-    bit-width of registers, adders, multipliers in the biquad. We
-    will use a Butterworth IIR LPF to do this analysis """
+""" In this code, we look at how to avoid overflow in IIR filters. 
+    We compare a fixed point IIR with a full resolution floating 
+    point IIR to see whether a particular input value is successful
+    in avoiding overflow given a set of register lengths for the 
+    coefficients, input and the multiplier. The code hardcodes the 
+    filter to a Butterworth IIR LPF. But one can use this code for
+    any filter of their choice """
 
 import plotly.graph_objects as go 
 from plotly.subplots import make_subplots
@@ -89,7 +92,8 @@ errfig =    {'data':[],
 
 
 
-# App layout
+# App layout - This is just for the UI. The main code that does all the signal processing is all the way at the end in 
+# def run(n_clicks) function. 
 app = dash.Dash(__name__)
 app.config.suppress_callback_exceptions = True
 mathjax_script = dji.Import(src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS-MML_SVG")
@@ -209,37 +213,6 @@ app.layout = html.Div(
 
 
 # -----------------------------  Function definitions -------------------------------------------------
-#------------------------------------------------------------------------------------
-# getminmax (copied from wavinspector project.)
-#   Find the audio signal's range so that we can have a fixed y-axis scaling as we 
-# scroll through the audio data using the main slider
-# -----------------------------------------------------------------------------------
-def getminmax():
-    global wf
-    
-    ymin = 0
-    ymax = 0
-    for fs in range(wf.getnframes()//wf.getframerate()+1): # Process 1 sec of data at a time
-                                                           # to prevent overuse of RAM. fs stands
-                                                           # for frame start, not sampling frequency :)
-        wf.setpos(wf.getframerate()*fs)
-        rawdata = wf.readframes(wf.getframerate()) # Read 1 sec worth of samples
-        dt = {1:np.int8, 2:np.int16, 4:np.int32}.get(wf.getsampwidth())
-        if dt == None: # We don't support other sample widths, Ex: 24-bit
-            return 0,0
-        temp = np.frombuffer(rawdata, dtype=dt) # Converting bytes object to np array
-        npdata = temp.reshape((wf.getnchannels(),-1), order='F') # If the wav fiel is stereo, 
-                                                                 # then we will get a 2-row numpy array
-        if wf.getnchannels() > 2:
-            return 0,0
-        else:
-            ymin = {0:ymin, 1:np.min(npdata)}.get(ymin > np.min(npdata))
-            ymax = {0:ymax, 1:np.max(npdata)}.get(ymax < np.max(npdata))
-
-    return ymin, ymax
-
-
-   
 
 # Main callback function. Most inputs, all outtputs have been lumped up into this function
 @app.callback(Output('hn-graph', 'figure'),
@@ -447,11 +420,11 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width,
             # multiplication will happen one at a time along with accumulation and accumulator    
             # could overflow any time. We instead do the who MAC operation in one shot and 
             # saturate at end.                           
-            acc = ((b0 * x_biquad) >> mul_shift_down) + \
-                  ((b1 * buf_vals[sosidx][0]) >> mul_shift_down) + \
-                  ((b2 * buf_vals[sosidx][1]) >> mul_shift_down) - \
-                  ((a1 * buf_vals[sosidx][2]) >> mul_shift_down) - \
-                  ((a2 * buf_vals[sosidx][3]) >> mul_shift_down)     
+            acc = ((b0 * x_biquad + (1 << (mul_shift_down-1))) >> mul_shift_down) + \
+                  ((b1 * buf_vals[sosidx][0] + (1 << (mul_shift_down-1))) >> mul_shift_down) + \
+                  ((b2 * buf_vals[sosidx][1] + (1 << (mul_shift_down-1))) >> mul_shift_down) - \
+                  ((a1 * buf_vals[sosidx][2] + (1 << (mul_shift_down-1))) >> mul_shift_down) - \
+                  ((a2 * buf_vals[sosidx][3] + (1 << (mul_shift_down-1))) >> mul_shift_down)     
             
             if np.abs(acc) > (2**(acc_width-1)):                
                 sat_count = sat_count + 1
@@ -491,12 +464,28 @@ def run(n_clicks):
         xy_res = params['xy_res'] 
         mul_out_res = params['mul_out_res'] 
         scale_factor = params['scale_factor']
+
         # ---------------------------------- Main code starts here ---------------------------------------------
         # Parameters related to fixed point operations
-        coef_int_bits = 2 # bits. This is without considering the sign bit
-        xy_int_bits = 0 # bits. 
-        acc_width = 40 # bits. Width of the accumulator. 
-        final_shift = 3 # bits
+        
+        coef_int_bits = np.floor(np.log2(np.max(np.abs(sos)))+1).astype(np.int64) # This is without considering the sign bit
+        xy_int_bits = 0 # bits. We keep this as zero as there is no advantage to having integer bits while converting a integer. -
+                        # But one wants to mess with it, one can. So I just wanted to provide a placeholder 
+        acc_width = mul_out_res + 3 # bits. Width of the accumulator. One biquad involves accumulating 5 multiplications. So 3
+                                    # extra bits than mul_out_res are sufficient
+        xy_frac_bits = xy_res - xy_int_bits - 1 # Just makes understanding the code easier
+        coef_frac_bits = coef_res - coef_int_bits - 1 # Just makes understanding the code easier
+        mul_out_frac_bits = mul_out_res - (xy_int_bits + 1) - (coef_int_bits+1) # Suppose we multiply x*h, where x is Q31 number,
+                                                                                # and h is a  Q2.29 number, then the result will be
+                                                                                # a Q3.60 bits (and not QQ2.60 as some text books say). 
+                                                                                # But if mul_out_res = 32, then we need to downshift 
+                                                                                # Q3.60 by 32 bits, resulting in Q3.28. The formula here
+                                                                                # is right because, 28 = 32 - (0+1) - (2+1)
+        final_shift = xy_frac_bits - mul_out_frac_bits  # Acculator output will also have the same number of fractional bits as that of the
+                                                        # multiplier. Continuing the example in the previous comment, this will be 28 bits. 
+                                                        # Since we want the output to have the same resolution as the input, we want to 
+                                                        # have 31 fractinal bits in it. That means shifting the accumulator output by 3,
+                                                        # i.e., 31-28. This is what this line of the code achieves 
         
         sos_fp = (np.round(sos*(2**(coef_res-coef_int_bits-1)))).astype(np.int64) # We will use this for the fixed point version
         if not is_sos_stable(sos_fp, coef_res-coef_int_bits-1): # Proprietary function to check filter stability after the 
@@ -517,8 +506,7 @@ def run(n_clicks):
             print('Unsupported input data resolution')
             sys.exit(0)
         
-        
-        zi = np.zeros(shape=(4,2))
+        zi = signal.sosfilt_zi(sos)        
         ymax_vals_old = np.empty(shape = (sos.shape[0], ))
         quant_error = []
         sat_count_array = []
@@ -554,15 +542,23 @@ def run(n_clicks):
         
             # Compare the full precision floating point output with fixed point output and calculate the quantization
             # noise
-            mse = np.mean((y-y_fp/(2**(31)))**2)
-            if mse != 0: # Sometimes, at the end of audio files, we will zero data. In this case, mse will turn out to be zero -
-                         # It is a good idea to avoid adding them to the quant_error list because it will make the histogram of 
-                         # it less revealing of the error distribution
-                quant_error.append(mse)    
+            if np.mean(y) != 0: # Sometimes, at the end of audio files, we will zero data. In this case, the error will turn out to be zero -
+                                # It is a good idea to avoid adding them to the quant_error list because it will make the histogram of 
+                                # it less revealing of the error distribution
+                error = (y - y_fp/(2**xy_frac_bits))
+                relative_error = error/y
+                argmax_val = np.argmax(np.abs(relative_error))
+                print('Max error:', relative_error[argmax_val])
+                print('y:', y[argmax_val])
+                print('yp:', y_fp[argmax_val]/(2**xy_frac_bits)) 
+                error_mean_var = [np.mean(relative_error), np.var(relative_error)]
+                quant_error.append(error_mean_var)    
     
+            print(error_mean_var)
             processed_seconds = findex+1
        
- 
+        print(sat_count_array)
+
         errfig = {'data':[go.Histogram(x=quant_error, histnorm='probability')],
                   'layout': go.Layout(
                                     title={'text': 'Mean square error distribution', 'font': {'color': 'white'}, 'x': 0.5},
