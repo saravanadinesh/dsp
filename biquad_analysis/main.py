@@ -185,7 +185,7 @@ app.layout = html.Div(
                                 ]
                             ), 
                             html.Button('Run', id='run', n_clicks=0, disabled=False, style={'color': '#FF4F00', 'margin-top':'20px'}),
-                            html.P("After hitting run, progress can be seen in python prompt", style={"padding-top":"5px"})
+                            html.P('See command line for processing progress ', style={"padding-top":"5px"})
                          ],
                 ),
                 html.Div(className='nine columns div-for-charts bg-grey',   # This is the right block of the app
@@ -204,7 +204,7 @@ app.layout = html.Div(
                             ),
                             dcc.Graph(id='err-graph', config={'displayModeBar': False}, style={'height':'45%'}, figure=errfig)
                          ]
-                )
+                ),
             ]
         ),
         mathjax_script
@@ -272,7 +272,7 @@ def update_output(input_filename, submit_times, coef_res, xy_res, mul_out_res, s
         elif triggered_input_id == 'xy-res':
             params['xy_res'] = xy_res 
         elif triggered_input_id == 'mul-out-res':
-            params['xy_res'] == mul_out_res 
+            params['mul_out_res'] = mul_out_res
         elif triggered_input_id == 'scaling-method':
             if scaling_method == 'hn':
                 params['scale_factor'] = np.sum(np.abs(hn[:hn_slider])) 
@@ -454,9 +454,14 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width,
     # Out of the main loop.         
     return y_fp, buf_vals, sat_count   
 
+
+
+
+
 @app.callback(Output('err-graph', 'figure'),
               Input('run', 'n_clicks'))
 def run(n_clicks):
+
     global wf, params, sos, errfig
 
     if wf != None:
@@ -542,27 +547,23 @@ def run(n_clicks):
         
             # Compare the full precision floating point output with fixed point output and calculate the quantization
             # noise
-            if np.mean(y) != 0: # Sometimes, at the end of audio files, we will zero data. In this case, the error will turn out to be zero -
-                                # It is a good idea to avoid adding them to the quant_error list because it will make the histogram of 
-                                # it less revealing of the error distribution
-                error = (y - y_fp/(2**xy_frac_bits))
-                relative_error = error/y
-                argmax_val = np.argmax(np.abs(relative_error))
-                print('Max error:', relative_error[argmax_val])
-                print('y:', y[argmax_val])
-                print('yp:', y_fp[argmax_val]/(2**xy_frac_bits)) 
-                error_mean_var = [np.mean(relative_error), np.var(relative_error)]
-                quant_error.append(error_mean_var)    
-    
-            print(error_mean_var)
-            processed_seconds = findex+1
-       
-        print(sat_count_array)
+            relevant_indices = np.where(y>1e-5) # This is to avoid limit cycles pulling the error distribution's mean
+            if relevant_indices[0].size != 0:
+                error = (y[relevant_indices] - y_fp[relevant_indices]/(2**xy_frac_bits))
+                relative_error = error/y[relevant_indices]
+                quant_error.append(np.mean(relative_error)) 
 
-        errfig = {'data':[go.Histogram(x=quant_error, histnorm='probability')],
+            processed_seconds = findex+1
+
+        
+        print('Error: ', quant_error)
+        print('Sat cournt array: ', sat_count_array) 
+       
+
+        errfig = {'data':[go.Histogram(x=quant_error, histnorm='probability', nbinsx=10)],
                   'layout': go.Layout(
-                                    title={'text': 'Mean square error distribution', 'font': {'color': 'white'}, 'x': 0.5},
-                                    xaxis_title = 'MSE (no unit)',
+                                    title={'text': 'Distribution of averages of relative error', 'font': {'color': 'white'}, 'x': 0.5},
+                                    xaxis_title = 'Average relative error (no unit)',
                                     yaxis_title = 'Relative frequency',
                                     autosize=True,
                                     colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
@@ -573,21 +574,10 @@ def run(n_clicks):
                                 )
                     }
 
-    
     return errfig   # This here hasn't got a purpose - Dash demands that we always return something!
 
 
-#@app.callback(Output('run', 'disabled'),
-#              Input('run', 'n_clicks'))
-#def run_enable_disable(n_clicks):
-#    global run_clicks
-#    
-#    print('n_clicks, run_clicks: ', n_clicks, run_clicks)
-#    if n_clicks > run_clicks:
-#        run_clicks = n_clicks
-#        return True
-#    else:
-#        return False
+
 
 update_output.submit_times = 0 # This variable should not be changed outside the update_output function
 
