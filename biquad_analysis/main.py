@@ -78,8 +78,8 @@ hnfig =     {'data':[go.Scatter(x=np.arange(0,200), y=hn),
 
 errfig =    {'data':[],
               'layout': go.Layout(
-                            title={'text': 'Mean square error distribution', 'font': {'color': 'white'}, 'x': 0.5},
-                            xaxis_title = 'MSE (no unit)',
+                            title={'text': 'Distribution of averages of relative error', 'font': {'color': 'white'}, 'x': 0.5},
+                            xaxis_title = 'Average relative error (no unit)',
                             yaxis_title = 'Relative frequency',
                             autosize=True,
                             colorway=["#5E0DAC", '#FF4F00', '#375CB1', '#FF7400', '#FFF400', '#FF0056'],
@@ -425,18 +425,25 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width,
                   ((b2 * buf_vals[sosidx][1] + (1 << (mul_shift_down-1))) >> mul_shift_down) - \
                   ((a1 * buf_vals[sosidx][2] + (1 << (mul_shift_down-1))) >> mul_shift_down) - \
                   ((a2 * buf_vals[sosidx][3] + (1 << (mul_shift_down-1))) >> mul_shift_down)     
-            
+           
+            #acc = ((b0 * x_biquad ) >> mul_shift_down) + \
+            #      ((b1 * buf_vals[sosidx][0] ) >> mul_shift_down) + \
+            #      ((b2 * buf_vals[sosidx][1] ) >> mul_shift_down) - \
+            #      ((a1 * buf_vals[sosidx][2] ) >> mul_shift_down) - \
+            #      ((a2 * buf_vals[sosidx][3] ) >> mul_shift_down)     
+           
+ 
             if np.abs(acc) > (2**(acc_width-1)):                
                 sat_count = sat_count + 1
                 y_biquad = (2**(xy_res-1))-1 if acc > 0 else -1*(2**(xy_res-1))   # Max out the output
             else:
-                temp_out = acc << final_shift if final_shift > 0 else acc >> final_shift
+                temp_out = acc << final_shift if final_shift > 0 else acc >> np.abs(final_shift)
                 if np.abs(temp_out) > (2**(xy_res-1)):                
                     sat_count = sat_count + 1
                     y_biquad = (2**(xy_res-1))-1 if temp_out > 0 else -1*(2**(xy_res-1))   # Max out the output
                 else:
                     y_biquad = temp_out
-             
+
             # Shift values in registers so that we will have updated buffers when we process
             # the  input sample. Note that, in an actual hardware, all buffer values of all
             # biquads will be updated simultaneously. We are doing it one sos at a time for 
@@ -491,16 +498,15 @@ def run(n_clicks):
                                                         # Since we want the output to have the same resolution as the input, we want to 
                                                         # have 31 fractinal bits in it. That means shifting the accumulator output by 3,
                                                         # i.e., 31-28. This is what this line of the code achieves 
-        
-        sos_fp = (np.round(sos*(2**(coef_res-coef_int_bits-1)))).astype(np.int64) # We will use this for the fixed point version
-        if not is_sos_stable(sos_fp, coef_res-coef_int_bits-1): # Proprietary function to check filter stability after the 
-                                                                # coefficicents were converted to fixed point in the previous line.
-                                                                # The possibility of the rounding operation rendering a stable filter
-                                                                # unstable is extremely rare, but it is a good idea to make it a habit
-                                                                # to always check for filter stability anytime we mess with its
-                                                                # coefficients. Furthermore, I didn't find a python library function 
-                                                                # that checks IIR filter stability of second order sections and took 
-                                                                # the opportunity to implement one
+        sos_fp = (np.round(sos*(2**coef_frac_bits))).astype(np.int64) # We will use this for the fixed point version
+        if not is_sos_stable(sos_fp, coef_frac_bits): # Proprietary function to check filter stability after the 
+                                                      # coefficicents were converted to fixed point in the previous line.
+                                                      # The possibility of the rounding operation rendering a stable filter
+                                                      # unstable is extremely rare, but it is a good idea to make it a habit
+                                                      # to always check for filter stability anytime we mess with its
+                                                      # coefficients. Furthermore, I didn't find a python library function 
+                                                      # that checks IIR filter stability of second order sections and took 
+                                                      # the opportunity to implement one
             print('Fixed point IIR is unstable')
             system.exit()
                                                                               
@@ -518,7 +524,7 @@ def run(n_clicks):
         frate = wf.getframerate()
         total_seconds = wf.getnframes()//frate+1 # Total number of seconds in the data
         normalizing_factor = 2**(8*wf.getsampwidth()-1) # The minus one is to leave out the sign bit
-        for findex in tqdm(range(total_seconds), desc="Processing data"): # Process 1 sec of data at a time
+        for findex in range(1): #tqdm(range(total_seconds), desc="Processing data"): # Process 1 sec of data at a time
                                             # to prevent overuse of RAM. 
             wf.setpos(frate*findex)
             rawdata = wf.readframes(frate) # Read 1 sec worth of samples
@@ -533,7 +539,7 @@ def run(n_clicks):
                                                                  # section outputs   
         
             # Sending same input data through fixed point DF1 filter to calculate quantization noise
-            x_fp = (np.round(xsamples*(2**(xy_res-xy_int_bits-1)))).astype(np.int64) # The minus 1 is to exclude the sign bit
+            x_fp = (np.round(xsamples*(2**xy_frac_bits))).astype(np.int64) # The minus 1 is to exclude the sign bit
             buf_vals = np.zeros([sos_fp.shape[0], 4]).astype(np.int64)
             y_fp, buf_vals, sat_count = sosfilt_fp(sos_fp = sos_fp, 
                                                   x_fp = x_fp, 
@@ -556,8 +562,16 @@ def run(n_clicks):
             processed_seconds = findex+1
 
         
-        print('Error: ', quant_error)
+        #print('Error: ', quant_error)
         print('Sat cournt array: ', sat_count_array) 
+        #print('y_fp: ', y_fp[90:100])
+
+        # Debug starts
+        fig = go.Figure()
+        num_disp_samples = frate
+        fig.add_trace(go.Scatter(x=np.arange(num_disp_samples), y=y[:num_disp_samples], name='Floating point output'))
+        fig.add_trace(go.Scatter(x=np.arange(num_disp_samples), y=y_fp[:num_disp_samples]/(2**xy_frac_bits), name='Fixed point output'))
+        fig.show()
        
 
         errfig = {'data':[go.Histogram(x=quant_error, histnorm='probability', nbinsx=10)],
