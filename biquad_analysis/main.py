@@ -56,8 +56,8 @@ hn_min = np.min(hn)
 hn_max = np.max(hn)
 hn_range = [hn_min-0.1, hn_max+0.1]
 
-hnfig =     {'data':[go.Scatter(x=np.arange(0,200), y=hn),
-                     go.Scatter(x=np.arange(0,50),  y=hn[:50] ),
+hnfig =     {'data':[go.Scatter(x=np.arange(0,200), y=hn, name='Impulse response'),
+                     go.Scatter(x=np.arange(0,50),  y=hn[:50], name='Samples used for scaling' ),
                      go.Scatter(x=[100], y=[hn_range[1]-0.1], 
                                 text='sum |h[n]| = {}'.format(params['scale_factor']), 
                                 mode='text', textfont_size=14)],
@@ -285,8 +285,8 @@ def update_output(input_filename, submit_times, coef_res, xy_res, mul_out_res, s
             hn_scalefactor = np.sum(np.abs(hn[:hn_slider]))
             if scaling_method == 'hn':
                 params['scale_factor'] = np.sum(np.abs(hn[:hn_slider])) 
-            hnfig =     {'data':[go.Scatter(x=np.arange(0,200), y=hn),
-                                 go.Scatter(x=np.arange(0,hn_slider),  y=hn[:hn_slider] ),
+            hnfig =     {'data':[go.Scatter(x=np.arange(0,200), y=hn,name='Impulse response'),
+                                 go.Scatter(x=np.arange(0,hn_slider),  y=hn[:hn_slider], name='Samples used for scaling' ),
                                  go.Scatter(x=[100], y=[hn_range[1]-0.1], 
                                             text='sum |h[n]| = {}'.format(hn_scalefactor), 
                                             mode='text', textfont_size=14)],
@@ -304,8 +304,11 @@ def update_output(input_filename, submit_times, coef_res, xy_res, mul_out_res, s
                                         yaxis={'range':hn_range}
                                     )
                         }
-             
-        return hnfig, '',None, None
+        
+        if wf != None:
+            return hnfig, None, *tick_mark
+        else:     
+            return hnfig, '',None, None
 
 
 # ----------------------------------------------------------------------------------------
@@ -426,12 +429,6 @@ def sosfilt_fp(sos_fp, x_fp, buf_vals, xy_res, coef_res, mul_out_res, acc_width,
                   ((a1 * buf_vals[sosidx][2] + (1 << (mul_shift_down-1))) >> mul_shift_down) - \
                   ((a2 * buf_vals[sosidx][3] + (1 << (mul_shift_down-1))) >> mul_shift_down)     
            
-            #acc = ((b0 * x_biquad ) >> mul_shift_down) + \
-            #      ((b1 * buf_vals[sosidx][0] ) >> mul_shift_down) + \
-            #      ((b2 * buf_vals[sosidx][1] ) >> mul_shift_down) - \
-            #      ((a1 * buf_vals[sosidx][2] ) >> mul_shift_down) - \
-            #      ((a2 * buf_vals[sosidx][3] ) >> mul_shift_down)     
-           
  
             if np.abs(acc) > (2**(acc_width-1)):                
                 sat_count = sat_count + 1
@@ -517,14 +514,14 @@ def run(n_clicks):
             print('Unsupported input data resolution')
             sys.exit(0)
         
-        zi = signal.sosfilt_zi(sos)        
+        zi = np.zeros([sos_fp.shape[0], 2])       
         ymax_vals_old = np.empty(shape = (sos.shape[0], ))
         quant_error = []
         sat_count_array = []
         frate = wf.getframerate()
         total_seconds = wf.getnframes()//frate+1 # Total number of seconds in the data
         normalizing_factor = 2**(8*wf.getsampwidth()-1) # The minus one is to leave out the sign bit
-        for findex in range(1): #tqdm(range(total_seconds), desc="Processing data"): # Process 1 sec of data at a time
+        for findex in tqdm(range(total_seconds), desc="Processing data"): # Process 1 sec of data at a time
                                             # to prevent overuse of RAM. 
             wf.setpos(frate*findex)
             rawdata = wf.readframes(frate) # Read 1 sec worth of samples
@@ -561,19 +558,7 @@ def run(n_clicks):
 
             processed_seconds = findex+1
 
-        
-        #print('Error: ', quant_error)
-        print('Sat cournt array: ', sat_count_array) 
-        #print('y_fp: ', y_fp[90:100])
-
-        # Debug starts
-        fig = go.Figure()
-        num_disp_samples = frate
-        fig.add_trace(go.Scatter(x=np.arange(num_disp_samples), y=y[:num_disp_samples], name='Floating point output'))
-        fig.add_trace(go.Scatter(x=np.arange(num_disp_samples), y=y_fp[:num_disp_samples]/(2**xy_frac_bits), name='Fixed point output'))
-        fig.show()
-       
-
+        print('Saturation array: ', sat_count_array)        
         errfig = {'data':[go.Histogram(x=quant_error, histnorm='probability', nbinsx=10)],
                   'layout': go.Layout(
                                     title={'text': 'Distribution of averages of relative error', 'font': {'color': 'white'}, 'x': 0.5},
