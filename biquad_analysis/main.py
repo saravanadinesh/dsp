@@ -550,7 +550,7 @@ def run(n_clicks):
         
             # Compare the full precision floating point output with fixed point output and calculate the quantization
             # noise
-            relevant_indices = np.where(y>1e-5) # This is to avoid limit cycles pulling the error distribution's mean
+            relevant_indices = np.where(y>1e-4) # This is to avoid limit cycles pulling the error distribution's mean
             if relevant_indices[0].size != 0:
                 error = (y[relevant_indices] - y_fp[relevant_indices]/(2**xy_frac_bits))
                 relative_error = error/y[relevant_indices]
@@ -558,7 +558,8 @@ def run(n_clicks):
 
             processed_seconds = findex+1
 
-        print('Saturation array: ', sat_count_array)        
+        print('Saturation array: ', sat_count_array)
+        print('Quant error: ', quant_error)        
         errfig = {'data':[go.Histogram(x=quant_error, histnorm='probability', nbinsx=10)],
                   'layout': go.Layout(
                                     title={'text': 'Distribution of averages of relative error', 'font': {'color': 'white'}, 'x': 0.5},

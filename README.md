@@ -1,3 +1,2 @@
 # dsp
-## wavinspector
-Html app for inspecting a wav file in time and frequency domain. It uses python code - specifically scipy and dash (plotly) to achieve this.
+This repository contains all my recent signal processing software projects. Every folder represent a project. Go into the folder to see its despcription (in its own README.md

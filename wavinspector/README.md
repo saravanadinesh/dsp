@@ -1,0 +1,2 @@
+#wavinspector
+An educational code to help people get familiarised with UI building with plotly for signal processing. It is an Python based HTML app that allows the user to input a wav file and inspect arbitrary time slices of that file data in both time and frequency domains. The code mainly uses scipy and plotly libraries. A blog post explaining the various features of the app and how to use it can be found in my personal site here: https://www.dineshdinesh.com/post/signal-processing-html-app-in-python 
